@@ -7,11 +7,21 @@ secrets.choice / secrets.token_hex over random - not for security
 a suppression.
 """
 
+from secrets import choice, randbelow, token_hex
 from sqlite3 import Connection
 
+from dibs import transitions
 from dibs.records import Agent
 
 ID_DIGITS = 4  # numeric suffix width in 'name-NNNN' ids (SSoT §7)
+ID_CEILING = 10 ** ID_DIGITS  # exclusive bound on the numeric suffix
+KEY_BYTES = 4  # token_hex(4) -> the 8 hex chars of a board key (D20)
+KEY_GROUP = 4  # ... split into two dash-separated groups (SSoT §13)
+
+# Both joins in one template: 'brave' + 'otter' -> 'brave-otter', then
+# 'brave-otter' + '1111' -> the id. Name displays, id addresses (I7).
+JOINED = '{0}-{1}'
+BOARD_KEY = 'dibs-{0}-{1}'  # the dibs- prefix is a skill trigger (D20)
 
 ADJECTIVES = (
     'agile', 'amber', 'bold', 'brave', 'breezy', 'bright', 'brisk',
@@ -42,7 +52,15 @@ def mint_identity(conn: Connection) -> Agent:
     Name for display, id for command input (D8, I7); scope is this
     board only (SSoT §7).
     """
-    raise NotImplementedError('ARCHITECTURE §13 step 6: mint_identity')
+    taken = True
+    while taken:
+        name = JOINED.format(choice(ADJECTIVES), choice(ANIMALS))
+        digits = str(randbelow(ID_CEILING)).zfill(ID_DIGITS)
+        agent = Agent(JOINED.format(name, digits), name)
+        # The UNIQUE name is the whole check: re-roll on a lost insert,
+        # never look before inserting (I1).
+        taken = not transitions.register_agent(conn, agent)
+    return agent
 
 
 def mint_board_key() -> str:
@@ -51,4 +69,5 @@ def mint_board_key() -> str:
     The dibs- prefix makes every handoff line its own skill trigger
     (D20); truth lives in meta.board_key, the registry is a cache.
     """
-    raise NotImplementedError('ARCHITECTURE §13 step 6: mint_board_key')
+    hexes = token_hex(KEY_BYTES)
+    return BOARD_KEY.format(hexes[:KEY_GROUP], hexes[KEY_GROUP:])
