@@ -10,7 +10,9 @@ module: ruff's bandit bundle flags random for non-crypto use (S311) and
 the tests per-file-ignores cover only S101/D.
 """
 
-from conftest import pick
+from dataclasses import replace
+
+from conftest import AUTHOR, pick
 
 from dibs import planfile
 from dibs.records import Status, Task
@@ -28,6 +30,8 @@ LINE_POOL = (
     '    fenced-looking code {0}',
     '\tTabbed prose {0}',
     'Unicode: naïve café 日本語 {0}',
+    'Prose with trailing spaces {0}   ',
+    '- [ ]   Padded task {0}   ',
     '',
     '   ',
     '> quoted text {0}',
@@ -36,12 +40,22 @@ LINE_POOL = (
     '    Body prose for {0}',
     '- [x] Done task {0}',
     '- [~ brave-otter] Doing task {0}',
+    # Ordinary markdown the §8 tokens exclude: never a task, never
+    # rewritten (F1 / D5).
+    '- [link text {0}](https://example.invalid/{0})',
+    '- [-] not a task {0}',
 )
 
 TASK_ID = 'T{0}'  # test-local ids; planfile never mints them
+NEW_ID = 'N{0}'  # ids the applier mints for SyncPlan.new, keyed by line
 
 STATUSES = (Status.TODO, Status.DOING, Status.DONE)
 EMPTY_SYNC = planfile.SyncPlan((), (), (), (), (), ())
+
+INSERTED = '- [ ] Inserted parent line'  # unique against LINE_POOL titles
+IMPORT_NOTE = 'checked by the plan author'
+NEST = '  {0}'  # one re-indent step, enough to become a child (D22)
+PAIR = 2  # the two checkbox lines swap_lines exchanges
 
 
 def imported(entry):
@@ -86,6 +100,133 @@ def tasks_for(text, seed=None):
     return tuple(rows)
 
 
+def as_row(entry, task_id):
+    """A freshly created row for one new plan line (parent resolved later)."""
+    return Task(
+        task_id=task_id,
+        parent_id=None,
+        seq=entry.line_no,
+        section=entry.section,
+        title=entry.title,
+        body=entry.body,
+        text_hash=planfile.title_hash(entry.title),
+        status=imported(entry),
+        owner=AUTHOR if imported(entry) == Status.DONE else None,
+        claimed_at=None,
+        done_at=None,
+        done_note=IMPORT_NOTE if imported(entry) == Status.DONE else None,
+    )
+
+
+def applied(plan, rows):
+    """The rows a sync applier leaves behind for this SyncPlan (§8).
+
+    Stands in for step 8's real applier and does what it must do, in
+    one pass: create the new lines, orphan the vanished ones, import
+    hand [x], update seq, then - because seq IS the line number once
+    reordering is applied - resolve every parent LINE to the id now
+    sitting on that line (ParentUpdate).
+    """
+    by_id = {row.task_id: row for row in rows}
+    for gone in plan.vanished:
+        by_id[gone] = replace(by_id[gone], status=Status.ORPHANED)
+    for hand_done in plan.checked:
+        by_id[hand_done] = replace(
+            by_id[hand_done],
+            status=Status.DONE, owner=AUTHOR, done_note=IMPORT_NOTE,
+        )
+    for entry in plan.new:
+        by_id[NEW_ID.format(entry.line_no)] = as_row(
+            entry, NEW_ID.format(entry.line_no),
+        )
+    for task_id, seq in plan.reordered:
+        by_id[task_id] = replace(by_id[task_id], seq=seq)
+    at_line = {
+        row.seq: row.task_id for row in by_id.values()
+        if row.status != Status.ORPHANED
+    }
+    moves = plan.reparented + tuple(
+        (NEW_ID.format(fresh.line_no), fresh.parent_line)
+        for fresh in plan.new
+    )
+    for moved, parent_line in moves:
+        by_id[moved] = replace(
+            by_id[moved], parent_id=at_line.get(parent_line),
+        )
+    return tuple(by_id.values())
+
+
+def join(lines):
+    """The document these lines make up."""
+    return '\n'.join(lines)
+
+
+def spliced(lines, index, replacement):
+    """Lines with the one at index replaced by these lines."""
+    tail = lines[index + 1:]
+    return lines[:index] + list(replacement) + tail
+
+
+def checkbox_spots(lines):
+    """Indexes of the lines the §8 recognition table calls tasks."""
+    return [
+        index for index, line in enumerate(lines)
+        if planfile.CHECKBOX_RE.match(line)
+    ]
+
+
+def unchanged(text):
+    """The document as written - the no-edit control."""
+    return text
+
+
+def insert_parent(text):
+    """Put a brand-new top-level checkbox above the first nested one."""
+    lines = text.split('\n')
+    for index in checkbox_spots(lines):
+        if lines[index].startswith(' '):
+            return join(spliced(lines, index, (INSERTED, lines[index])))
+    return text
+
+
+def reindent_line(text):
+    """Push a top-level checkbox under the checkbox above it."""
+    lines = text.split('\n')
+    for index in checkbox_spots(lines)[1:]:
+        if not lines[index].startswith(' '):
+            nested = NEST.format(lines[index])
+            return join(spliced(lines, index, (nested,)))
+    return text
+
+
+def delete_line(text):
+    """Remove the first checkbox line, children and all left behind."""
+    spots = checkbox_spots(text.split('\n'))
+    if spots:
+        return join(spliced(text.split('\n'), spots[0], ()))
+    return text
+
+
+def swap_lines(text):
+    """Swap the first two checkbox lines (D7 reprioritizing by hand)."""
+    lines = text.split('\n')
+    spots = checkbox_spots(lines)[:PAIR]
+    if len(spots) < PAIR:
+        return text
+    first, second = spots
+    swapped = spliced(lines, first, (lines[second],))
+    return join(spliced(swapped, second, (lines[first],)))
+
+
+MUTATIONS = (
+    unchanged,
+    insert_parent,
+    reindent_line,
+    delete_line,
+    swap_lines,
+)
+
+
 def shape(parsed):
     """Everything a parsed item is, except its checkbox state."""
     return tuple(
@@ -117,6 +258,21 @@ def test_annotate_preserves_nongrammar_bytes():
     assert rewritten
 
 
+def test_annotate_preserves_line_terminators():
+    """I4: with rows already in the file's own state, annotation is a
+    byte-for-byte no-op - CRLF terminators, trailing whitespace and an
+    unterminated final line included. Generator + seeds 0-99."""
+    for seed in range(SEEDS):
+        rows = tasks_for(generate_document(seed), seed)
+        # Annotate once so every grammar line already shows its row's
+        # state, then hand the file back in CRLF.
+        canonical = planfile.annotate_lines(
+            generate_document(seed), rows,
+        ).replace('\n', '\r\n')
+
+        assert planfile.annotate_lines(canonical, rows) == canonical
+
+
 def test_annotate_then_parse_is_stable():
     """Metamorphic: parse(annotate(text, tasks)) finds the same items
     (titles, parents, sections) as parse(text) - only checkbox state
@@ -132,10 +288,20 @@ def test_annotate_then_parse_is_stable():
 
 def test_compute_sync_is_idempotent():
     """§8: applying a computed SyncPlan to the rows, then recomputing
-    against the same text, yields an empty SyncPlan."""
+    against the same text, yields an empty SyncPlan - across the seeded
+    documents and across hand edits of them (a new parent above an
+    existing child, a re-indent, a deletion, a swap)."""
     for seed in range(SEEDS):
         text = generate_document(seed)
         parsed = planfile.parse_plan(text)
+        rows = tasks_for(text)
 
         assert planfile.compute_sync(parsed, ()).new == parsed
-        assert planfile.compute_sync(parsed, tasks_for(text)) == EMPTY_SYNC
+        assert planfile.compute_sync(parsed, rows) == EMPTY_SYNC
+        for mutate in MUTATIONS:
+            edited = planfile.parse_plan(mutate(text))
+            once = planfile.compute_sync(edited, rows)
+
+            assert planfile.compute_sync(
+                edited, applied(once, rows),
+            ) == EMPTY_SYNC

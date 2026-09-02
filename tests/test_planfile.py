@@ -40,6 +40,34 @@ DUPLICATE_TEXT = """- [ ] Same title
 - [x] Same title
 """
 
+# Same title twice, both open: annotation must tell the two rows apart
+# by document order, the way §8 sync does.
+DUPLICATE_TWICE_TEXT = """- [ ] Same title
+- [ ] Same title
+"""
+
+# Every line here is ordinary markdown that §8 does not recognize: a
+# link bullet, an unlisted state token, uppercase X, a two-space box,
+# and a missing separator space. All are prose (D5).
+NOT_TASKS_TEXT = """- [Docs](https://example.invalid/x)
+- [-] dash is not a state
+- [X] uppercase is not a state
+- [  ] two spaces
+- [ ]NoSpace
+"""
+
+# Real tasks whose titles are exactly what NOT_TASKS_TEXT would parse
+# to if the recognition pattern were loose: the annotation decoys.
+LOOKALIKE_TITLES_TEXT = """- [ ] (https://example.invalid/x)
+- [ ] dash is not a state
+- [ ] uppercase is not a state
+- [ ] two spaces
+- [ ] NoSpace
+"""
+
+# A CRLF document: the CR belongs to the file, not to any title.
+CRLF_TEXT = '- [ ] Alpha\r\nprose line\r\n  indented body\r\n'
+
 TASK_ID = 'T{0}'  # test-local ids; planfile never mints them
 
 DONE_TEXT = '- [x] Rename Lexer to Tokenizer  ✓ brave-otter: renamed\n'
@@ -225,6 +253,24 @@ def test_parse_fence_lookalike_policy():
     )
 
 
+def test_parse_rejects_lookalike_bracket_lines():
+    """§8: only ' ', 'x' and '~ <name>' are checkbox tokens; every
+    other bracket line is prose, so it is neither a task nor rewritten
+    (D5, I4)."""
+    decoys = seed_tasks(planfile.parse_plan(LOOKALIKE_TITLES_TEXT))
+
+    assert not planfile.parse_plan(NOT_TASKS_TEXT)
+    # Even with rows whose titles match the lookalike text, byte-exact.
+    assert planfile.annotate_lines(NOT_TASKS_TEXT, decoys) == NOT_TASKS_TEXT
+
+
+def test_parse_bare_checkbox_still_recognized():
+    """§8: '- [ ]' with no title is still a task, with an empty one."""
+    parsed = planfile.parse_plan('- [ ]\n')
+
+    assert titles(parsed) == ('',)
+
+
 def test_annotate_rewrites_only_grammar_lines(plan_text):
     """I4: every byte outside annotation-grammar lines is preserved."""
     tasks = seed_tasks(planfile.parse_plan(plan_text))
@@ -258,6 +304,80 @@ def test_annotate_todo_doing_done_forms():
     assert planfile.annotate_lines(text, (done,)) == (
         '- [x] Ship it  ✓ happy-elephant: shipped in r8\n'
     )
+
+
+def test_annotate_keeps_crlf_terminators():
+    """I4: a rewritten line keeps the terminator the file uses, so a
+    CRLF plan never comes back with mixed line endings."""
+    tasks = seed_tasks(planfile.parse_plan(CRLF_TEXT))
+    working = replace(tasks[0], status=Status.DOING, owner='brave-otter-1111')
+
+    assert planfile.annotate_lines(CRLF_TEXT, tasks) == CRLF_TEXT
+    assert planfile.annotate_lines(CRLF_TEXT, (working,)) == (
+        '- [~ brave-otter] Alpha\r\nprose line\r\n  indented body\r\n'
+    )
+
+
+def test_annotate_renders_the_title_from_the_line():
+    """D4: plan.md is authoritative for text. A hash-equal title the
+    human re-cased or re-spaced survives annotation verbatim; only the
+    state token and the done suffix come from the DB."""
+    tasks = seed_tasks(planfile.parse_plan('- [ ] fix the parser\n'))
+    edited = '- [ ] Fix The Parser\n'
+    working = replace(tasks[0], status=Status.DOING, owner='brave-otter-1111')
+
+    assert planfile.annotate_lines(edited, tasks) == edited
+    assert planfile.annotate_lines(edited, (working,)) == (
+        '- [~ brave-otter] Fix The Parser\n'
+    )
+
+
+def test_annotate_keeps_a_mark_inside_the_title():
+    """I4: the done suffix is '  ✓ <name>: <note>', matched whole - a
+    title that merely contains the mark is not a suffix and survives
+    parse and annotation untouched."""
+    text = '- [ ] has ✓ mark in title\n'
+    parsed = planfile.parse_plan(text)
+
+    assert titles(parsed) == ('has ✓ mark in title',)
+    assert planfile.annotate_lines(text, seed_tasks(parsed)) == text
+
+
+def test_annotate_pairs_duplicate_titles_in_order():
+    """§8: duplicates are matched by order, for annotation as much as
+    for sync - only the line whose row is done carries the ✓ suffix,
+    so the done-notes stay a usable review checklist (D4)."""
+    tasks = seed_tasks(planfile.parse_plan(DUPLICATE_TWICE_TEXT))
+    finished = replace(
+        tasks[0],
+        status=Status.DONE, owner='brave-otter-1111', done_note='shipped',
+    )
+
+    assert planfile.annotate_lines(
+        DUPLICATE_TWICE_TEXT, (finished, tasks[1]),
+    ) == '- [x] Same title  ✓ brave-otter: shipped\n- [ ] Same title\n'
+    assert planfile.annotate_lines(
+        DUPLICATE_TWICE_TEXT, (tasks[0], replace(finished, task_id='T1')),
+    ) == '- [ ] Same title\n- [x] Same title  ✓ brave-otter: shipped\n'
+
+
+def test_annotate_note_stays_one_line():
+    """§8 grammar is one line per task: a done-note carrying newlines
+    is collapsed on the way into the file, so annotation never injects
+    a non-grammar line and stays idempotent (I4)."""
+    wordy = replace(
+        BASE_TASK,
+        status=Status.DONE,
+        owner='happy-elephant-2222',
+        done_note='shipped in r8\nand tagged\n\ttwice',
+    )
+
+    once = planfile.annotate_lines('- [ ] Ship it\n', (wordy,))
+
+    assert once == (
+        '- [x] Ship it  ✓ happy-elephant: shipped in r8 and tagged twice\n'
+    )
+    assert planfile.annotate_lines(once, (wordy,)) == once
 
 
 def test_annotate_is_idempotent(plan_text):
@@ -339,15 +459,44 @@ def test_sync_reorder_updates_seq_only():
 
 
 def test_sync_reindent_updates_parent(plan_text):
-    """§8 sync + D22: re-indenting under another checkbox moves
-    parent_id (and back to None at top level); ID untouched."""
+    """§8 sync + D22: re-indenting under another checkbox moves the
+    parent (named by its LINE, D4) and back to None at top level; ID
+    untouched."""
     parsed = planfile.parse_plan(plan_text)
     tasks = seed_tasks(parsed)
     promoted = reparented(parsed, PLAN_TITLES[3], None)
     demoted = reparented(parsed, PLAN_TITLES[4], parsed[0].line_no)
 
     assert planfile.compute_sync(promoted, tasks).reparented == (('T3', None),)
-    assert planfile.compute_sync(demoted, tasks).reparented == (('T4', 'T0'),)
+    assert planfile.compute_sync(demoted, tasks).reparented == (
+        ('T4', parsed[0].line_no),
+    )
+
+
+def test_sync_reparents_under_a_brand_new_parent():
+    """§8 + D22: a new checkbox line inserted above an existing child
+    becomes its parent in the SAME SyncPlan - the parent has no id yet,
+    so reparented names its line and the applier resolves it."""
+    tasks = seed_tasks(planfile.parse_plan('- [ ] child\n'))
+    grown = planfile.parse_plan('- [ ] new parent\n  - [ ] child\n')
+
+    diff = planfile.compute_sync(grown, tasks)
+
+    assert titles(diff.new) == ('new parent',)
+    assert diff.reordered == (('T0', 2),)
+    assert diff.reparented == (('T0', 1),)
+
+
+def test_sync_vanished_parent_promotes_its_child():
+    """§8 + D22: when a parent line leaves the plan its child follows
+    the text back to top level rather than pointing at an orphan."""
+    parsed = planfile.parse_plan('- [ ] parent\n  - [ ] child\n')
+    tasks = seed_tasks(parsed)
+
+    diff = planfile.compute_sync(planfile.parse_plan('- [ ] child\n'), tasks)
+
+    assert diff.vanished == ('T0',)
+    assert diff.reparented == (('T1', None),)
 
 
 def test_sync_regressed_checkbox_flagged(plan_text):

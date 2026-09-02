@@ -16,6 +16,18 @@ if TYPE_CHECKING:
 
 EVENT_CAP = 15  # SSoT §13: unseen events shown before '... and N more'
 
+# Refusal wording for the transitions and the read-side resolver. C5
+# keeps every user-facing string in this module; callers only fill in
+# the task id and pair message with steer. Every steer is a runnable
+# command (D14, I10) - see the §11 failure playbook for the story each
+# one tells.
+NOT_OWNER = '{0} is not yours - you were probably reaped.'
+NOT_IMPORTABLE = '{0} is not a todo task, so sync cannot import it.'
+UNKNOWN_TASK = 'Unknown task {0} - did you mean {1}?'
+NO_SUCH_TASK = 'Unknown task {0} - nothing on this board is close.'
+RECLAIM = 'dibs claim --task {0}'
+LIST_BOARD = 'dibs list'
+
 
 def render_reply(reply: Reply) -> str:
     """Join result lines, capped one-line events, then the hint (D14).

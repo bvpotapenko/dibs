@@ -9,7 +9,7 @@ import threading
 import pytest
 from conftest import NOW, insert_task
 
-from dibs import planfile, store, transitions
+from dibs import output, planfile, store, transitions
 from dibs.records import Agent, Event, EventKind, Status, Task
 from dibs.runtime import DibsError
 
@@ -393,6 +393,22 @@ def test_import_author_done_needs_a_todo_row(board, two_agents):
     assert not kinds(board.conn, EventKind.SYNC)
 
 
+def test_refusal_wording_comes_from_output(board, two_agents):
+    """C5/C7: transitions raise DibsError but build no wording of
+    their own - message and steer both come from output, and the steer
+    is a runnable command (D14, I10)."""
+    stranger = two_agents[1]
+    claimed = transitions.claim(board.conn, two_agents[0].agent_id, NOW)
+    task_id = claimed[0].task_id
+
+    with pytest.raises(DibsError) as refusal:
+        transitions.finish(board.conn, stranger.agent_id, NOW, task_id, 'no')
+
+    assert refusal.value.message == output.NOT_OWNER.format(task_id)
+    assert refusal.value.steer == output.RECLAIM.format(task_id)
+    assert refusal.value.steer.startswith('dibs ')
+
+
 def test_register_agent_false_on_collision(board):
     """I1: second INSERT of the same name returns False via UNIQUE -
     no SELECT-then-INSERT anywhere."""
@@ -405,5 +421,20 @@ def test_register_agent_false_on_collision(board):
 
     assert first is True
     assert reroll is False
+    assert board.conn.execute(COUNT_AGENTS).fetchone()[0] == 1
+    assert len(kinds(board.conn, EventKind.JOIN)) == 1
+
+
+def test_register_agent_replay_is_silent(board):
+    """I6: re-registering an identity that already exists changes
+    nothing and appends no second join event - the rowcount is the
+    whole truth (I1, C3)."""
+    same = Agent('brave-otter-1111', 'brave-otter')
+
+    minted = transitions.register_agent(board.conn, same)
+    replay = transitions.register_agent(board.conn, same)
+
+    assert minted is True
+    assert replay is False
     assert board.conn.execute(COUNT_AGENTS).fetchone()[0] == 1
     assert len(kinds(board.conn, EventKind.JOIN)) == 1

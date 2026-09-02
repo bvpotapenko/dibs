@@ -11,6 +11,7 @@ transitions_plan); never raise the limit.
 
 from sqlite3 import Connection
 
+from dibs.output import LIST_BOARD, NOT_IMPORTABLE, NOT_OWNER, RECLAIM
 from dibs.records import Agent, Event, EventKind, Task
 from dibs.runtime import DibsError
 
@@ -19,10 +20,6 @@ AUTHOR = 'human'  # SSoT §5: owner of a hand-checked [x] (§8 sync)
 AUTHOR_DONE_NOTE = 'checked by the plan author'  # planfile renders it
 
 BUNDLE = ',{0},'  # ',A1,A2,' - one bound value instead of an id list
-RECLAIM = 'dibs claim --task {0}'  # the I10 steer for a lost task
-NOT_OWNER = '{0} is not yours - you were probably reaped.'
-NOT_IMPORTABLE = '{0} is not a todo task, so sync cannot import it.'
-LIST_BOARD = 'dibs list'
 
 # Event kinds ride in as parameters so records.EventKind stays their one
 # home; statuses stay inline because they are the WHERE logic (C9).
@@ -136,10 +133,9 @@ INSERT OR IGNORE INTO agents (
 
 JOIN_EVENT = """
 INSERT INTO events (ts, agent, kind, task_id, to_agent, text)
-SELECT
-    CAST(strftime('%s', 'now') AS INTEGER), :agent_id, :kind, NULL, NULL,
-    :name
-WHERE EXISTS (SELECT 1 FROM agents WHERE id = :agent_id)
+VALUES (
+    CAST(strftime('%s', 'now') AS INTEGER), ?, ?, NULL, NULL, ?
+)
 """
 
 
@@ -272,14 +268,18 @@ def import_author_done(conn: Connection, now: int, task_id: str) -> Task:
 
 
 def register_agent(conn: Connection, agent: Agent) -> bool:
-    """INSERT the identity; False on UNIQUE collision, never pre-check (I1)."""
+    """INSERT the identity; False on UNIQUE collision, never pre-check (I1).
+
+    The rowcount is the whole truth (I1): a mint writes exactly one
+    join event, an ignored duplicate writes none (I6).
+    """
     minted = conn.execute(
         INSERT_AGENT, (agent.agent_id, agent.name),
     ).rowcount == 1
-    conn.execute(JOIN_EVENT, {
-        'agent_id': agent.agent_id,
-        'kind': EventKind.JOIN.value,
-        'name': agent.name,
-    })
+    if minted:
+        conn.execute(
+            JOIN_EVENT,
+            (agent.agent_id, EventKind.JOIN.value, agent.name),
+        )
     conn.commit()
     return minted
