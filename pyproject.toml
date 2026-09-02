@@ -1,0 +1,63 @@
+# dibs build metadata + tool config.
+# WHAT: docs/SSoT.md (authoritative).  HOW: docs/ARCHITECTURE.md.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dibs"
+description = "Call dibs on tasks: an atomic claim board for parallel agents working one plan.md"
+readme = "README.md"
+requires-python = ">=3.10"
+dynamic = ["version"]
+# Runtime dependencies: ZERO by design (SSoT D3). Dev tools only, below.
+dependencies = []
+
+[project.scripts]
+dibs = "dibs.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "flake8>=7.1",
+    # WPS 1.x carries only WPS checks; ruff below covers the classic
+    # bundle it dropped (bandit/S, pydocstyle/D, isort/I, ...).
+    "wemake-python-styleguide>=1.1",
+    "ruff>=0.8",
+    "pytest>=8.3",
+]
+
+[tool.setuptools]
+packages = ["dibs", "dibs.verbs"]
+
+[tool.setuptools.dynamic]
+# Version is single-sourced from the package (ARCHITECTURE §3).
+version = {attr = "dibs.DIBS_VERSION"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 80
+target-version = "py310"
+
+[tool.ruff.format]
+# Formatter is optional; if ever run, keep the wemake single-quote style.
+quote-style = "single"
+
+[tool.ruff.lint]
+# Complements flake8 (setup.cfg runs WPS only). Ruff owns the rest:
+# pycodestyle, pyflakes, isort, naming, docstrings, bandit, bugbear.
+select = [
+    "E", "W", "F", "I", "N", "D", "UP", "B", "C4", "SIM", "RET", "ARG", "PTH", "S", "RUF", "PLR",
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "pep257"
+
+[tool.ruff.lint.isort]
+known-first-party = ["dibs"]
+
+[tool.ruff.lint.per-file-ignores]
+# Mirrors setup.cfg per-file-ignores (ARCHITECTURE §10).
+"tests/*" = ["S101", "D"]

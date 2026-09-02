@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# Environments
+.venv/
+venv/
+
+# Build artifacts (zipapp staging + dist, see Makefile)
+build/
+dist/
+*.pyz
+
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+
+# dibs boards: .<plan>.dibs plus SQLite WAL/SHM siblings (SSoT D2)
+.*.dibs*
+
+# dibs invocation traces - a lens, never a ledger (SSoT D23)
+.logs/
+
+# OS noise
+.DS_Store
