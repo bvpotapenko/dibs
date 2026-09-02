@@ -6,8 +6,8 @@ SQL text lives only in store/transitions/queries, placeholders only
 so column changes go through SSoT first.
 """
 
+import sqlite3
 from pathlib import Path
-from sqlite3 import Connection
 
 PRAGMAS = (
     'PRAGMA journal_mode=WAL',
@@ -64,21 +64,42 @@ CREATE TABLE IF NOT EXISTS meta (
 
 SCHEMA = (TASKS_DDL, AGENTS_DDL, EVENTS_DDL, META_DDL)
 
+SCHEMA_VERSION = '1'
+MAX_HAND_DEFAULT = '1'  # SSoT §13; init --max-hand overrides (D6)
+
+# Board facts seeded once; init and sync own their values afterwards, so
+# the seed must never overwrite (D6, D20, I9).
+META_DEFAULTS = (
+    ('board_key', ''),
+    ('max_hand', MAX_HAND_DEFAULT),
+    ('plan_mtime', '0'),
+    ('schema_version', SCHEMA_VERSION),
+)
+
+META_SEED = 'INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)'
+
 REGISTRY_DIR = Path('~/.local/state/dibs')  # D20; expanduser at use time
 
 
-def connect(db_path: Path) -> Connection:
+def connect(db_path: Path) -> sqlite3.Connection:
     """Open the board DB with every PRAGMAS entry applied (D2)."""
-    raise NotImplementedError('ARCHITECTURE §13 step 2: store.connect')
+    conn = sqlite3.connect(db_path)
+    for pragma in PRAGMAS:
+        conn.execute(pragma)
+    return conn
 
 
-def ensure_schema(conn: Connection) -> None:
+def ensure_schema(conn: sqlite3.Connection) -> None:
     """Create the SSoT §5 tables; idempotent.
 
     Meta rows carried: board_key (D20), max_hand (D6), plan_mtime (I9),
     schema_version.
     """
-    raise NotImplementedError('ARCHITECTURE §13 step 2: store.ensure_schema')
+    for table_ddl in SCHEMA:
+        conn.execute(table_ddl)
+    for meta_row in META_DEFAULTS:
+        conn.execute(META_SEED, meta_row)
+    conn.commit()
 
 
 def registry_record(key: str, plan_path: Path) -> None:
@@ -87,9 +108,16 @@ def registry_record(key: str, plan_path: Path) -> None:
     The registry is a cache of the board's own meta truth; it self-heals
     on drift whenever a path-addressed command runs (D20).
     """
-    raise NotImplementedError('ARCHITECTURE §13 step 2: store.registry_record')
+    registry_dir = REGISTRY_DIR.expanduser()
+    registry_dir.mkdir(parents=True, exist_ok=True)
+    entry = registry_dir / key
+    entry.write_text(str(plan_path.resolve()), encoding='utf-8')
 
 
 def registry_lookup(key: str) -> Path | None:
     """Resolve a board key to its plan path, None if unknown/stale (D20)."""
-    raise NotImplementedError('ARCHITECTURE §13 step 2: store.registry_lookup')
+    entry = REGISTRY_DIR.expanduser() / key
+    if not entry.is_file():
+        return None
+    plan_path = Path(entry.read_text(encoding='utf-8').strip())
+    return plan_path if plan_path.is_file() else None
