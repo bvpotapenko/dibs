@@ -1,7 +1,7 @@
 # dibs — Single Source of Truth
 
-**Status:** design phase — no code written yet.
-**Rev:** 8 — (r2) small-context workers: D16–D17; D5, D7, D8, D14, I10. (r3) implementation architecture: D3, §2 budget; `ARCHITECTURE.md`. (r4) parallel plans + skill invocation: D2, D8, D13; D18–D19. (r5) board keys, hand limit, verify: D6, D18–D19 amended; D20–D21 new; §2, §5–§6, §8, §10–§13 touched. (r6) leaves-first prerequisites: D22 new; D6–D7 amended; §5–§6, §8, §10–§13 touched. (r7) author skill `dibs-plan`: D1, D13 amended; §2 budget; §10 split into two skill specs. (r8) invocation tracing for debugging: D23 new; §6 env note; §12 + deferred `log --jsonl`.
+**Status:** implementation in progress — `ARCHITECTURE.md` §13 steps 1–7 landed (2026-09-02); verbs, CLI and zipapp pending.
+**Rev:** 9 — (r2) small-context workers: D16–D17; D5, D7, D8, D14, I10. (r3) implementation architecture: D3, §2 budget; `ARCHITECTURE.md`. (r4) parallel plans + skill invocation: D2, D8, D13; D18–D19. (r5) board keys, hand limit, verify: D6, D18–D19 amended; D20–D21 new; §2, §5–§6, §8, §10–§13 touched. (r6) leaves-first prerequisites: D22 new; D6–D7 amended; §5–§6, §8, §10–§13 touched. (r7) author skill `dibs-plan`: D1, D13 amended; §2 budget; §10 split into two skill specs. (r8) invocation tracing for debugging: D23 new; §6 env note; §12 + deferred `log --jsonl`. (r9) sync as one stamped transaction and the step-8 gaps: §2 budget re-scoped (17 files, code-line measure); I6 scoped to state; `orphan` event kind, `seq` = line, joiner cursor and own-event rule (§5, §9); `[X]` recognized, ID minting rules, body/section refresh and `[~ name]` newcomer rows (§8); `join` prints the bare id only, `init` refusal is a CAS (§6); §12 sections-beyond-Z.
 **Precedence:** this file supersedes conversation history, README prose, and code comments. When anything disagrees with this file, this file wins until amended here.
 
 ---
@@ -18,7 +18,7 @@ A tiny CLI, **`dibs`**, backed by SQLite sitting next to the plan. Agents never 
 
 For small-context local workers (a first-class target, D16) the board doubles as **external memory**: the global picture lives in the DB, each worker's context holds one briefing plus its own work, and a single agent in a claim → work → done → die → respawn loop is served as well as N parallel ones.
 
-**Budget:** a stdlib-only package, target ~600 physical lines across ≤15 small files (hard stop and re-scope at 1000), shipped as a single file `dibs.pyz`; two skill files (`dibs`, `dibs-plan`); one board file per plan.
+**Budget (r9):** a stdlib-only package of ≤17 small files, ~1,500 *code lines* (hard stop and re-scope at 2,000), shipped as a single file `dibs.pyz`; two skill files (`dibs`, `dibs-plan`); one board file per plan. A code line holds at least one token that is neither a comment nor a docstring; blank lines don't count (stdlib `tokenize` measures it). Physical lines are deliberately *not* budgeted: contract comments and docstrings are how a context-poor successor reads this code cold (D16 applied to the repo itself), and SQL literals are the logic (I1). History: r3 set "~600 physical lines, ≤15 files" for a smaller tool; r5–r8 added keys, the hand limit, verify, gating and tracing without revisiting it, and the package crossed the old numbers at step 7 (1,390 physical / 1,030 code, 15 files). r9 sizes the budget to the design that exists and re-arms the stop.
 **Not building (v1):** daemon, heartbeats, point-to-point mail, dependency graph, auth, config file, multi-machine support. See §12 for revisit triggers.
 
 ---
@@ -60,7 +60,7 @@ These must hold at all times; any change that breaks one requires amending this 
 - **I3 — Agents never write plan.md.**
 - **I4 — Byte preservation.** Tool writes to `plan.md` modify only lines matching its own annotation grammar (§8); all other content is untouched.
 - **I5 — IDs are stable.** Once assigned, a task ID is never renumbered or reused. Sync adds and orphans; it never deletes.
-- **I6 — Append-only journal.** Every mutation writes exactly one event. Events are never updated or deleted.
+- **I6 — Append-only journal.** Every *state* change — status, ownership, timestamps, notes: the DB's half of D4 — writes exactly one event per row it changed. Text-truth refreshes (`seq`, `parent_id`, `body`, `section` flowing md→db on sync) write none: the plan file is their journal. Events are never updated or deleted.
 - **I7 — IDs stay private by hygiene.** Session ids appear only in the owning agent's own command I/O; all shared surfaces (plan.md, list output, events shown to others) display names only.
 - **I8 — Bad agents cause delay, never corruption.** A crashed, stalled, or confused agent can at worst hold a task until the TTL; reaping guarantees every task eventually returns to `todo`. Correctness never depends on agent cooperation.
 - **I9 — The human may edit plan.md at any time.** The tool syncs (by mtime check) before any operation that reads or writes plan-derived state. Mid-flight task injection is a supported workflow, not an edge case.
@@ -74,13 +74,15 @@ These must hold at all times; any change that breaks one requires amending this 
 tasks (
   id         TEXT PRIMARY KEY,   -- "A3", child "A3.1": section letter + creation ordinals, stable (I5)
   parent_id  TEXT,               -- enclosing checkbox, NULL at top level; gates claimability (D22)
-  seq        INTEGER,            -- current document order; drives claim priority (D7)
+  seq        INTEGER,            -- the checkbox's current line number: document order for claim priority (D7),
+                                 -- unique among live (non-orphaned) rows, so sync resolves "the row on line N"
   section    TEXT,               -- nearest heading text, or "" if none
   title      TEXT,
   body       TEXT,               -- indented non-checkbox lines under the checkbox, cached from md
   text_hash  TEXT,               -- normalized-title hash, used by sync matching
   status     TEXT,               -- todo | doing | done | orphaned
-  owner      TEXT,               -- agents.id, NULL unless doing/done
+  owner      TEXT,               -- agents.id, NULL unless doing/done ('human' for an imported [x]);
+                                 -- kept for the record when a held task is orphaned
   claimed_at INTEGER,
   done_at    INTEGER,
   done_note  TEXT
@@ -91,7 +93,7 @@ agents (
   name            TEXT UNIQUE,        -- "happy-elephant"; UNIQUE drives mint-retry
   created_at      INTEGER,
   last_seen       INTEGER,
-  last_event_seen INTEGER,            -- piggyback-delivery cursor
+  last_event_seen INTEGER,            -- piggyback-delivery cursor; starts at the board's high-water mark (§9)
   last_section    TEXT                -- drives section-affinity claim order (D7)
 );
 
@@ -99,9 +101,11 @@ events (
   id       INTEGER PRIMARY KEY AUTOINCREMENT,
   ts       INTEGER,
   agent    TEXT,                 -- actor id ("human" and "system" are valid actors)
-  kind     TEXT,                 -- init | sync | join | claim | done | drop | note | reap
+  kind     TEXT,                 -- init | sync | join | claim | done | drop | note | reap | orphan
+                                 -- init: board opened (text = key); sync: a task arrived via sync (text = title);
+                                 -- orphan: its line left the plan (text = title); a hand [x] imports as done by 'human'
   task_id  TEXT,                 -- NULL for free-standing notes
-  to_agent TEXT,                 -- NULL = broadcast (D10)
+  to_agent TEXT,                 -- NULL = broadcast (D10); reaps are directed to the former owner
   text     TEXT
 );
 ```
@@ -116,15 +120,15 @@ Every verb accepts identity via `--as <id>` or env `DIBS_AS` (env preferred; see
 
 | Verb | Does | On failure / edge |
 |---|---|---|
-| `init <plan.md> [--max-hand N]` | Parse once, create `.<plan>.dibs`, mint and print the board key with a paste-ready handoff line, print the task roster. `--max-hand` sets the per-board hand limit (default 1). | Refuses if the board exists — points to `sync`. |
+| `init <plan.md> [--max-hand N]` | Parse once, create `.<plan>.dibs`, mint and print the board key with a paste-ready handoff line, print the task roster. `--max-hand` sets the per-board hand limit (default 1). Task rows arrive through the same sync path every command runs; opening the board is a compare-and-swap on the stored key (I1). | Refuses if the board exists (the CAS finds a key) — points to `sync`. |
 | `verify <plan.md>` | Dry run: render the parse — sections, would-be IDs, titles, body presence, the nesting tree with a waits-for column (D22), warnings — creating and touching nothing; no board required (D21). | Board already exists → noted in one line, points to `list`. |
-| `sync` | Reconcile plan ↔ DB per §8. Runs automatically before other verbs when plan mtime changed; manual call forces it. | Ambiguities are reported, never guessed silently. |
-| `join` | Mint identity and print the bare id — for launcher scripts: `export DIBS_AS=$(dibs join)` — so workers never handle identity (D8). | — |
+| `sync` | Reconcile plan ↔ DB per §8, as **one transaction stamped by the plan's mtime**: the first statement swaps the stored stamp for the file's (`WHERE value <> :stamp`); zero rows means this version is already applied (or a concurrent sync won) and nothing else happens, else the diff is computed and applied under that write lock. Runs before every other verb (I9); the manual call additionally reports what it applied and warns about `[ ]` lines the board overrode. | Ambiguities are reported, never guessed silently. |
+| `join` | Mint identity and print the bare id and **nothing else** — no feed, no hint — so `export DIBS_AS=$(dibs join)` captures exactly the id (D8). | — |
 | `claim [--task ID …]` | Mint identity on first use (fallback when `join` wasn't used); CAS-claim the next *available* task — no open children (D22) — by section affinity, then `seq` (D7), or the exact bundle (atomic, all-or-none, must fit the hand). Returns id reminder, task title + body, events, next verb. If the task was previously claimed and reaped, output names the prior claimant: "previously claimed by brave-otter, reaped 20 min ago — verify before redoing." | Lost race → tool auto-picks next (no-arg) or reports which bundle member was taken. Hand full → "finish or drop" steer naming the held task(s) (D6). Nothing available yet → names what the remaining tasks wait on; retry later or stop if the launcher respawns (D6, D22). Explicit `--task` on a gated parent → refused, open children named. Empty board → "no tasks remain; stop." |
 | `done <ID> --note "…"` | Ownership-checked completion; annotates plan line. `--note` is mandatory. If this completion unlocks a parent, the output names it with a ready `claim --task` command (D7, D22). | Rejected (not owner) → almost always means reaped; see playbook §11. |
 | `drop <ID> [--note "…"]` | Release back to `todo`, log why. | — |
 | `note "…" [--for <name>]` | Append event; broadcast by default. | Unknown name → still logged, warned. |
-| `list` | Board + recent events, headed by the board key (D20 — `list --plan <path>` is how a lost key is recovered); gated parents show child progress (`2/3`, D22); also triggers reaping, as does any read. | — |
+| `list` | Board + the most recent events (all kinds, directed included — this is the human's view; capped like the feed, §13), headed by the board key (D20 — `list --plan <path>` is how a lost key is recovered); gated parents show child progress (`2/3`, D22), orphaned rows are flagged; also triggers reaping, as does any read. | — |
 
 ---
 
@@ -134,7 +138,9 @@ Two short hardcoded word lists (~50 friendly adjectives × ~50 animals ≈ 2,500
 
 ## 8. plan.md contract
 
-**Recognition (at init and sync):** a task is any line matching `- [ ]` / `- [x]` / `- [~ …]`. Indented content directly beneath it travels with the task as `body` — except an indented *checkbox*, which is a child task whose parent is the nearest less-indented checkbox above it (D22); nesting depth is free, and the parser never invents structure from prose or plain bullets. The nearest heading above becomes its `section`; sections are lettered `A, B, C…` in document order (no headings → single implicit section); children take dotted IDs (`A3.1`, creation order, stable per I5). All other content is the human's prose and is ignored and preserved. Authors can preview exactly this parse, without side effects, via `dibs verify <plan>` (D21).
+**Recognition (at init and sync):** a task is any line matching `- [ ]` / `- [x]` / `- [~ …]` — exactly those tokens, then one space, then the title; `[X]` counts as `[x]` (the tool writes lowercase back). Anything else in the brackets (`[-]`, `[link](url)`, `[  ]`) is prose. Indented content directly beneath a task travels with it as `body` — except an indented *checkbox*, which is a child task whose parent is the nearest less-indented checkbox above it (D22); nesting depth is free, and the parser never invents structure from prose or plain bullets. The nearest heading above becomes its `section` (no headings → single implicit section). All other content is the human's prose and is ignored and preserved. Authors can preview exactly this parse, without side effects, via `dibs verify <plan>` (D21).
+
+**IDs (I5):** a top-level task is `<letter><n>`; a child is `<parent id>.<n>` (`A3.1`, `A3.1.2`). The letter belongs to the section: a section that already has rows keeps their letter, a section seen for the first time takes the next unused letter (`A` first, so a fresh board letters headings in document order). `n` is one more than the number of rows ever created under that letter (top level) or under that parent — orphaned rows included, so an ID is never reused. Minting happens inside the sync transaction, never from the text alone; `verify` shows the IDs a fresh `init` would produce. Twenty-six sections is the v1 ceiling (§12).
 
 **Annotation grammar (the only lines the tool may rewrite):**
 
@@ -150,20 +156,23 @@ Two short hardcoded word lists (~50 friendly adjectives × ~50 animals ≈ 2,500
 
 | File says | DB says | Result |
 |---|---|---|
-| new checkbox line | — | new task, next free ID in its section |
-| `[x]` | todo | imported as done, owner `human` |
+| new checkbox line | — | new task, next free ID in its section (rules above); `[ ]` → todo, `[x]` → done by `human`, `[~ name]` → todo (no such owner on this board; the line is re-annotated) |
+| `[x]` | todo | imported as done, owner `human` — guarded by `WHERE status='todo'`: if a worker claimed it meanwhile the DB wins silently |
 | `[ ]` | doing / done | DB wins, line re-annotated, warning emitted |
 | line vanished | any | task → `orphaned`: excluded from claim, kept in list, flagged |
 | title edited | — | old task orphaned + new task created; both flagged (accepted v1 limitation) |
 | lines reordered | — | `seq` updated; IDs untouched (D7, I5) |
-| line re-indented under another checkbox | — | `parent_id` updated; ID untouched — structure is text truth (D4, D22) |
+| line re-indented under another checkbox | — | `parent_id` updated; ID untouched — structure is text truth (D4, D22). The new parent may itself be new in this same sync |
+| body or heading text edited | — | `body` / `section` refreshed; ID untouched, no event (D4, I6) — rewording a briefing or renaming a heading is the author's ordinary editing |
 | `[x]` on a parent with open children | todo | imported as done (author's call), with a warning; the children stay independently claimable |
+
+Every sync is one transaction, serialized and de-duplicated by the mtime stamp (§6): two workers whose commands notice the same edit produce one set of new rows, never two.
 
 **Escape hatch** for pure-prose plans: a one-time LLM normalization pass into checkboxes *before* `init`. External to the tool; the parser never gets smarter than the rules above.
 
 ## 9. Events & delivery
 
-One table (§5), append-only (I6). Delivery is exclusively piggyback: after any command, the caller receives events with `id > last_event_seen` addressed to all or to them, then the cursor advances. No polling loop, no push, no read-receipts. `messages.md` from the original sketch is dropped in favor of `dibs list` (§12 has the revive trigger).
+One table (§5), append-only (I6). Delivery is exclusively piggyback: after any command, the caller receives events with `id > last_event_seen` that are addressed to them, or broadcast by someone else — never their own broadcasts, which the command's own output already states (D14) — then the cursor advances. A freshly minted identity's cursor starts at the board's current high-water mark: a joiner has no "while you were away", and the roster a fresh `init` writes never floods a first feed. Events *addressed* to an agent always arrive, which is why a reap is directed to the former owner (D9). The command that mints an identity (`join`, first-use `claim`) delivers no feed at all. No polling loop, no push, no read-receipts; `dibs list` shows the recent events of every kind for humans. `messages.md` from the original sketch is dropped in favor of `dibs list` (§12 has the revive trigger).
 
 ## 10. The skills (protocol) — content specs
 
@@ -220,6 +229,7 @@ Build these the day their trigger fires, not before:
 - **`verify --diff` (sync preview against a live board)** — trigger: an author is surprised by a sync outcome.
 - **Post-init `max-hand` change** — trigger: an author actually needs to widen or narrow the hand mid-flight; until then the limit is fixed at init (D6).
 - **`dibs log --jsonl` (render of the events table, date-filterable)** — trigger: someone needs machine-readable per-plan *state* history beyond `dibs list` and the D23 trace. A render, never a second write path (I6).
+- **Sections beyond `Z`** (two-letter prefixes, or lettering that survives a heading rename with continuity) — trigger: a real plan has 27 headings, or an author renames a heading and objects to the new tasks under it taking a fresh letter. Until then §8's rules stand and `verify` shows the outcome.
 
 ## 13. Open knobs (settle at write time; defaults proposed)
 

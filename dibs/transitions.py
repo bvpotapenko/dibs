@@ -1,23 +1,23 @@
-"""Write transitions: each public function is exactly one transaction.
+"""Worker-side write transitions: one transaction per public function.
 
 Success is judged by rowcount alone (I1, C3) and appends exactly one
-event in the same transaction (I6). Branching lives in the WHERE
-clause; Python stays linear (C9). Level L2 (imports L0-L1).
+event per row whose state changed, in the same transaction (I6).
+Branching lives in the WHERE clause; Python stays linear (C9). Level L2
+(imports L0-L1).
 
-Member budget 7 - AT THE CAP by design (ARCHITECTURE §3): the first
-new write transition splits this module in two (e.g. transitions_work /
-transitions_plan); never raise the limit.
+Member budget 6 - AT THE CAP (ARCHITECTURE §3). The split this module
+pre-announced happened at step 8: the plan -> board direction (board
+opening, the sync applier) lives in plansync.py, which owns AUTHOR and
+the hand-checked-[x] import. A seventh member here means stop and flag.
 """
 
 from sqlite3 import Connection
 
-from dibs.output import LIST_BOARD, NOT_IMPORTABLE, NOT_OWNER, RECLAIM
+from dibs.output import NOT_OWNER, RECLAIM
 from dibs.records import Agent, Event, EventKind, Task
 from dibs.runtime import DibsError
 
 REAP_TTL_SECONDS = 2700  # 45 minutes (SSoT §13); D9 passive reaping
-AUTHOR = 'human'  # SSoT §5: owner of a hand-checked [x] (§8 sync)
-AUTHOR_DONE_NOTE = 'checked by the plan author'  # planfile renders it
 
 BUNDLE = ',{0},'  # ',A1,A2,' - one bound value instead of an id list
 
@@ -80,16 +80,12 @@ WHERE id = ? AND owner = ? AND status = 'doing'
 RETURNING *
 """
 
-IMPORT_DONE = """
-UPDATE tasks SET
-    status = 'done', owner = ?, done_at = ?, done_note = ?
-WHERE id = ? AND status = 'todo'
-RETURNING *
-"""
-
+# A reap is directed at the agent who must know it happened - the
+# former owner - so it reaches them even after their cursor moved past
+# every broadcast (D9, D10, §9 SSoT).
 REAP_EVENTS = """
 INSERT INTO events (ts, agent, kind, task_id, to_agent, text)
-SELECT ?, stale.owner, ?, stale.id, NULL, stale.title
+SELECT ?, stale.owner, ?, stale.id, stale.owner, stale.title
 FROM tasks stale
 WHERE stale.status = 'doing' AND stale.claimed_at < ?
 RETURNING *
@@ -120,6 +116,9 @@ VALUES (
 RETURNING *
 """
 
+# The cursor starts at the board's high-water mark: a joiner has no
+# 'while you were away', and the roster a fresh init wrote never floods
+# a first feed (§9 SSoT).
 INSERT_AGENT = """
 INSERT OR IGNORE INTO agents (
     id, name, created_at, last_seen, last_event_seen, last_section
@@ -127,7 +126,7 @@ INSERT OR IGNORE INTO agents (
     ?, ?,
     CAST(strftime('%s', 'now') AS INTEGER),
     CAST(strftime('%s', 'now') AS INTEGER),
-    0, NULL
+    (SELECT COALESCE(max(id), 0) FROM events), NULL
 )
 """
 
@@ -251,20 +250,6 @@ def record_note(
     ).fetchone()
     conn.commit()
     return Event(*logged)
-
-
-def import_author_done(conn: Connection, now: int, task_id: str) -> Task:
-    """Import a hand-checked [x] as done by 'human' during sync (SSoT §8)."""
-    imported = conn.execute(
-        IMPORT_DONE, (AUTHOR, now, AUTHOR_DONE_NOTE, task_id),
-    ).fetchall()
-    if not imported:
-        raise DibsError(NOT_IMPORTABLE.format(task_id), LIST_BOARD)
-    conn.execute(EVENT, (
-        now, AUTHOR, EventKind.SYNC.value, task_id, None, AUTHOR_DONE_NOTE,
-    ))
-    conn.commit()
-    return Task(*imported[0])
 
 
 def register_agent(conn: Connection, agent: Agent) -> bool:

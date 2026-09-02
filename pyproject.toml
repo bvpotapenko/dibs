@@ -60,4 +60,6 @@ known-first-party = ["dibs"]
 
 [tool.ruff.lint.per-file-ignores]
 # Mirrors setup.cfg per-file-ignores (ARCHITECTURE §10).
-"tests/*" = ["S101", "D"]
+# PLR2004 and S311 are the ruff twins of WPS432 (literals in asserts) and
+# of seeded test randomness - test idiom, exempted here as in setup.cfg.
+"tests/*" = ["S101", "D", "PLR2004", "S311"]

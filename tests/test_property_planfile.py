@@ -50,12 +50,14 @@ TASK_ID = 'T{0}'  # test-local ids; planfile never mints them
 NEW_ID = 'N{0}'  # ids the applier mints for SyncPlan.new, keyed by line
 
 STATUSES = (Status.TODO, Status.DOING, Status.DONE)
-EMPTY_SYNC = planfile.SyncPlan((), (), (), (), (), ())
+EMPTY_SYNC = planfile.SyncPlan((), (), (), (), (), (), ())
 
 INSERTED = '- [ ] Inserted parent line'  # unique against LINE_POOL titles
 IMPORT_NOTE = 'checked by the plan author'
 NEST = '  {0}'  # one re-indent step, enough to become a child (D22)
 PAIR = 2  # the two checkbox lines swap_lines exchanges
+REWORD = '    Reworded briefing for {0}'  # a body edit, nothing more
+RENAME = '# Renamed heading {0}'  # a section edit, nothing more
 
 
 def imported(entry):
@@ -141,6 +143,10 @@ def applied(plan, rows):
         )
     for task_id, seq in plan.reordered:
         by_id[task_id] = replace(by_id[task_id], seq=seq)
+    for task_id, body, section in plan.refreshed:
+        by_id[task_id] = replace(
+            by_id[task_id], body=body, section=section,
+        )
     at_line = {
         row.seq: row.task_id for row in by_id.values()
         if row.status != Status.ORPHANED
@@ -207,6 +213,27 @@ def delete_line(text):
     return text
 
 
+def reword_body(text):
+    """Replace the line under the first checkbox with fresh prose."""
+    lines = text.split('\n')
+    for index in checkbox_spots(lines):
+        below = lines[index + 1:index + 2]
+        if below and not checkbox_spots(below):
+            return join(spliced(
+                lines, index + 1, (REWORD.format(index),),
+            ))
+    return text
+
+
+def rename_heading(text):
+    """Rename the first heading; every task under it changes section."""
+    lines = text.split('\n')
+    for index, line in enumerate(lines):
+        if line.startswith('#'):
+            return join(spliced(lines, index, (RENAME.format(index),)))
+    return text
+
+
 def swap_lines(text):
     """Swap the first two checkbox lines (D7 reprioritizing by hand)."""
     lines = text.split('\n')
@@ -224,6 +251,8 @@ MUTATIONS = (
     reindent_line,
     delete_line,
     swap_lines,
+    reword_body,
+    rename_heading,
 )
 
 
@@ -284,6 +313,36 @@ def test_annotate_then_parse_is_stable():
         assert shape(planfile.parse_plan(after)) == shape(
             planfile.parse_plan(text),
         )
+
+
+def test_refreshed_fires_exactly_on_text_edits():
+    """§8 (Rev 9): body and section are text truth flowing md -> db.
+    An untouched document refreshes nothing; rewording a body or
+    renaming a heading refreshes rows and touches no other field - no
+    task is created, orphaned, reordered, imported or regressed by an
+    edit that only changed prose (D4, I6). The exact payload is pinned
+    by test_planfile, and applying it is covered by the idempotence
+    case below, which now mutates both ways too."""
+    landed = 0
+    for seed in range(SEEDS):
+        text = generate_document(seed)
+        rows = tasks_for(text)
+
+        assert not planfile.compute_sync(
+            planfile.parse_plan(text), rows,
+        ).refreshed
+
+        for edit in (reword_body, rename_heading):
+            once = planfile.compute_sync(
+                planfile.parse_plan(edit(text)), rows,
+            )
+            landed += len(once.refreshed)
+
+            assert (once.new, once.vanished) == ((), ())
+            assert (once.reordered, once.reparented) == ((), ())
+            assert (once.checked, once.regressed) == ((), ())
+
+    assert landed
 
 
 def test_compute_sync_is_idempotent():

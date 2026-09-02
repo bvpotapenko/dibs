@@ -7,9 +7,9 @@ implement claim against it.
 import threading
 
 import pytest
-from conftest import NOW, insert_task
+from conftest import NOW, resync
 
-from dibs import output, planfile, store, transitions
+from dibs import output, store, transitions
 from dibs.records import Agent, Event, EventKind, Status, Task
 from dibs.runtime import DibsError
 
@@ -28,8 +28,10 @@ ORPHAN_TASK = "UPDATE tasks SET status = 'orphaned' WHERE id = ?"
 COUNT_AGENTS = 'SELECT count(*) FROM agents'
 GATED_LEFT = 1  # A2 stays todo while its children are held
 
-EXTRA_DOCS_TITLE = 'Polish the docs index'
-EXTRA_DOCS_SEQ = 25  # after B1, so affinity must beat seq to reach it
+# Appended to the fixture plan, so it lands last in Docs with the
+# highest seq on the board: only section affinity reaches it (D7).
+EXTRA_DOCS_LINE = '- [ ] Polish the docs index\n'
+LATER_STAMP = 2_000_000_000  # a newer plan mtime, so the sync CAS fires
 STALE = NOW - transitions.REAP_TTL_SECONDS - 1
 RECENT = NOW - 100
 
@@ -170,25 +172,12 @@ def test_respawn_steered_back_to_held_task(board, two_agents):
     ] == [held[0].task_id]
 
 
-def test_claim_prefers_last_section_then_seq(board, two_agents):
+def test_claim_prefers_last_section_then_seq(board, two_agents, plan_text):
     """D7: next no-arg claim lands in the caller's last section when one
     is open there, else lowest seq; explicit --task overrides."""
     worker = two_agents[0].agent_id
     set_hand(board.conn, 4)
-    insert_task(board.conn, Task(
-        task_id='B2',
-        parent_id=None,
-        seq=EXTRA_DOCS_SEQ,
-        section='Docs',
-        title=EXTRA_DOCS_TITLE,
-        body='',
-        text_hash=planfile.title_hash(EXTRA_DOCS_TITLE),
-        status=Status.TODO,
-        owner=None,
-        claimed_at=None,
-        done_at=None,
-        done_note=None,
-    ))
+    resync(board, plan_text + EXTRA_DOCS_LINE, LATER_STAMP)
 
     transitions.claim(board.conn, worker, NOW, ('B1',))
     affinity = transitions.claim(board.conn, worker, NOW)
@@ -327,8 +316,14 @@ def test_housekeeping_reaps_past_ttl(board, two_agents):
     reaped = transitions.housekeeping(board.conn, None, NOW)
 
     assert [event.task_id for event in reaped] == ['A1']
-    assert load(board.conn, 'A1').status == Status.TODO
-    assert load(board.conn, 'A1').owner is None
+    # 8a: the reap is directed at the former owner - the one agent who
+    # must learn about it, whatever its cursor has passed (D9, D10).
+    assert [(event.agent, event.to_agent) for event in reaped] == [
+        (worker, worker),
+    ]
+    assert (
+        load(board.conn, 'A1').status, load(board.conn, 'A1').owner,
+    ) == (Status.TODO, None)
     assert load(board.conn, 'A2.1').status == Status.DOING
     assert len(kinds(board.conn, EventKind.REAP)) == 1
 
@@ -366,31 +361,6 @@ def test_record_note_broadcast_and_directed(board, two_agents):
     assert [
         event.text for event in kinds(board.conn, EventKind.NOTE)
     ] == ['touched the lexer', 'yours', 'to nobody']
-
-
-def test_import_author_done_owner_human(board):
-    """SSoT §8: a hand-checked [x] imports as done with owner 'human'."""
-    imported = transitions.import_author_done(board.conn, NOW, 'A1')
-
-    assert imported.status == Status.DONE
-    assert imported.owner == transitions.AUTHOR
-    assert imported.done_at == NOW
-    # planfile's done annotation renders a note, so one must exist.
-    assert imported.done_note
-    assert [event.task_id for event in journal(board.conn)] == ['A1']
-
-
-def test_import_author_done_needs_a_todo_row(board, two_agents):
-    """SSoT §8: the DB wins - sync never imports over live work."""
-    worker = two_agents[0].agent_id
-    claimed = transitions.claim(board.conn, worker, NOW)
-
-    with pytest.raises(DibsError):
-        transitions.import_author_done(board.conn, NOW, claimed[0].task_id)
-
-    assert load(board.conn, claimed[0].task_id).status == Status.DOING
-    assert load(board.conn, claimed[0].task_id).owner == worker
-    assert not kinds(board.conn, EventKind.SYNC)
 
 
 def test_refusal_wording_comes_from_output(board, two_agents):

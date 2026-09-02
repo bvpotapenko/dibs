@@ -11,6 +11,7 @@ REORDER = 'UPDATE tasks SET seq = ? WHERE id = ?'
 FIRST_SEQ = 0  # ahead of every fixture line number, so B1 sorts first
 STALE = NOW - transitions.REAP_TTL_SECONDS - 1
 SEQ_ORDER = ('B1', 'A1', 'A2', 'A2.1', 'A2.2', 'A3')
+EVENT_FLOOD = 100  # a cap far above anything the fixture board holds
 
 
 def texts(events):
@@ -19,24 +20,43 @@ def texts(events):
 
 
 def test_deliver_events_advances_cursor(board, two_agents):
-    """D10: first call returns unseen events; an immediate second call
-    returns nothing - cursor moved in the same transaction."""
+    """D10/§9: a joiner's cursor starts at the board's high-water mark,
+    so the roster init wrote never floods a first feed; your own
+    broadcasts are never echoed back; and an immediate second call
+    returns nothing - the cursor moved in the same transaction."""
     worker, other = two_agents
     transitions.record_note(board.conn, worker.agent_id, NOW, 'touched it')
 
     first = queries.deliver_events(board.conn, worker.agent_id)
     second = queries.deliver_events(board.conn, worker.agent_id)
 
-    assert texts(first) == [worker.name, other.name, 'touched it']
-    assert [event.kind for event in first] == [
-        EventKind.JOIN, EventKind.JOIN, EventKind.NOTE,
-    ]
+    # Not the six sync events nor the init line below the cursor, not
+    # worker's own join, not worker's own note: just the other joiner.
+    assert texts(first) == [other.name]
+    assert [event.kind for event in first] == [EventKind.JOIN]
     assert not second
+    # The note reaches everyone else, exactly once.
+    assert texts(queries.deliver_events(board.conn, other.agent_id)) == [
+        'touched it',
+    ]
+
+
+def test_deliver_events_without_identity(board, two_agents):
+    """§6 step 8: join and a claim that minted its own identity have no
+    supplied actor, so they get an empty feed by construction - no
+    special case, no cursor moved."""
+    otter = two_agents[0]
+    transitions.record_note(board.conn, otter.agent_id, NOW, 'broadcast')
+
+    assert not queries.deliver_events(board.conn, None)
+    # The note is still there for the agent it was addressed to.
+    assert texts(queries.deliver_events(board.conn, two_agents[1].agent_id))
 
 
 def test_deliver_events_filters_directed(board, two_agents):
-    """D10: a note --for otter reaches otter, never elephant;
-    broadcasts reach both."""
+    """D10/§9: a note --for otter reaches otter and nobody else; a
+    broadcast reaches everyone but its own author, whose command output
+    already said it."""
     otter, elephant = two_agents
     queries.deliver_events(board.conn, otter.agent_id)
     queries.deliver_events(board.conn, elephant.agent_id)
@@ -49,22 +69,30 @@ def test_deliver_events_filters_directed(board, two_agents):
     to_elephant = queries.deliver_events(board.conn, elephant.agent_id)
 
     assert texts(to_otter) == ['yours alone', 'everyone']
-    assert texts(to_elephant) == ['everyone']
+    assert not to_elephant
 
 
-def test_prior_claim_reports_reap(board, two_agents):
-    """SSoT §6 claim row: a reaped task's re-claimer learns the prior
-    claimant and when the reap happened."""
+def test_recent_events_filters_and_order(board, two_agents):
+    """§6 claim row + list: one statement serves both readers. Filtered
+    to a task and a kind it is the reap-history warning; unfiltered it
+    is the human's feed, newest first and capped."""
     prior = two_agents[0].agent_id
     transitions.claim(board.conn, prior, STALE, ('A1',))
     transitions.housekeeping(board.conn, None, NOW)
 
-    reap = queries.prior_claim(board.conn, 'A1')
+    reaped = queries.recent_events(board.conn, 1, 'A1', EventKind.REAP)[0]
 
-    assert reap.kind == EventKind.REAP
-    assert reap.agent == prior
-    assert reap.ts == NOW
-    assert queries.prior_claim(board.conn, 'B1') is None
+    assert (reaped.kind, reaped.agent, reaped.ts) == (
+        EventKind.REAP, prior, NOW,
+    )
+    assert not queries.recent_events(board.conn, 1, 'B1', EventKind.REAP)
+    # Unfiltered: newest first, and the cap is a cap.
+    assert [
+        event.kind for event in queries.recent_events(board.conn, 2)
+    ] == [EventKind.REAP, EventKind.CLAIM]
+    assert len(queries.recent_events(board.conn, EVENT_FLOOD)) == len(
+        queries.recent_events(board.conn, EVENT_FLOOD * 2),
+    )
 
 
 def test_resolve_task_exact_beats_fuzzy(board):

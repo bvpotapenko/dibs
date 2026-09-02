@@ -127,4 +127,4 @@ A task is held by at most one agent, a hand holds at most `max-hand` tasks (defa
 
 `SSoT.md` holds the decisions and invariants and is authoritative; `ARCHITECTURE.md` is the implementation reference; `skills/dibs/SKILL.md` is the protocol workers load, and `skills/dibs-plan/SKILL.md` the one plan authors load.
 
-Status: design phase — interface specified, implementation pending.
+Status: implementation in progress — the storage, plan parsing, transitions, queries, naming and output layers are built and tested; the verbs and command-line entry point are next.

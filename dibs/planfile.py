@@ -15,14 +15,15 @@ from types import MappingProxyType
 from dibs.records import Status, Task
 
 # Recognition pattern (SSoT §8): exactly the three checkbox tokens -
-# a single space, 'x', or '~ <name>' - and the space after ']' that
-# separates the token from the title. Any other bracket content is the
-# human's prose, never a task and never rewritten (D5, I4). A bare
-# '- [ ]' with no title still counts; done lines carry an annotation
-# suffix to strip (see below). 'eol' holds the CR of a CRLF document so
-# a rewritten line keeps the terminator the rest of the file uses (I4).
+# a single space, 'x' (or 'X', lowercased at parse), or '~ <name>' -
+# and the space after ']' that separates the token from the title. Any
+# other bracket content is the human's prose, never a task and never
+# rewritten (D5, I4). A bare '- [ ]' with no title still counts; done
+# lines carry an annotation suffix to strip (see below). 'eol' holds the
+# CR of a CRLF document so a rewritten line keeps the terminator the
+# rest of the file uses (I4).
 CHECKBOX_RE = re.compile(
-    r'^(?P<indent>[ \t]*)- \[(?P<state> |x|~ [^\]]+)\]'
+    r'^(?P<indent>[ \t]*)- \[(?P<state> |x|X|~ [^\]]+)\]'
     r'(?P<rest>| .*?)(?P<eol>\r?)$',
 )
 
@@ -46,7 +47,7 @@ DONE_SUFFIX_RE = re.compile(r'  ✓ \S+: .*$')
 # {0} is the line's own text INCLUDING the separator space, so a title's
 # spacing survives a state change untouched (D4, I4).
 # A done row is assumed to carry a note: D11 makes --note mandatory and
-# transitions.import_author_done must supply one for a hand [x].
+# plansync supplies AUTHOR_DONE_NOTE for a hand [x] (SSoT §8).
 ANNOTATIONS = MappingProxyType({
     Status.TODO: '- [ ]{0}',
     Status.DOING: '- [~ {2}]{0}',
@@ -63,6 +64,10 @@ INDENT = 1
 BODY = 2
 
 SeqUpdate = tuple[str, int]  # (task_id, new_seq) - §8 'lines reordered'
+# (task_id, body, section) - §8 'body or heading text edited'. Text
+# truth flowing md -> db: the plan file is its own journal, so applying
+# one writes no event (D4, I6).
+TextUpdate = tuple[str, str, str]
 # (task_id, parent's LINE, or None back at top level) - §8 're-indented'.
 # A line, not an id: the new parent may itself be a line this same
 # SyncPlan is asking the applier to create, which has no id yet. The
@@ -81,7 +86,7 @@ class PlanItem:
 
     line_no: int
     parent_line: int | None  # nearest less-indented checkbox above (D22)
-    checkbox: str  # raw state token: '', 'x', or '~ <name>'
+    checkbox: str  # state token, lowercased: '', 'x', '~ <name>'
     title: str
     body: str
     section: str
@@ -97,6 +102,7 @@ class SyncPlan:
     reordered: tuple[SeqUpdate, ...]
     reparented: tuple[ParentUpdate, ...]  # parent named by LINE, not id
     regressed: tuple[str, ...]  # [ ] in file but doing/done in DB
+    refreshed: tuple[TextUpdate, ...]  # reworded body / renamed heading
 
 
 def parse_plan(text: str) -> tuple[PlanItem, ...]:
@@ -121,7 +127,7 @@ def parse_plan(text: str) -> tuple[PlanItem, ...]:
                         ),
                         None,
                     ),
-                    match.group('state').strip(),
+                    match.group('state').strip().lower(),
                     DONE_SUFFIX_RE.sub('', match.group('rest')).strip(),
                     '',
                     section,
@@ -200,6 +206,16 @@ def compute_sync(
             row.task_id for entry, row in pairs.items()
             if row and not entry.checkbox
             and row.status in {Status.DOING, Status.DONE}
+        ),
+        # Keyed like 'new' above rather than unpacked like its
+        # neighbours: the pair-unpacking form is spent (WPS204), and
+        # this reads the same - the parsed line and the row it matched.
+        refreshed=tuple(
+            (pairs[fresh].task_id, fresh.body, fresh.section)
+            for fresh in pairs
+            if pairs[fresh]
+            and (fresh.body, fresh.section)
+            != (pairs[fresh].body, pairs[fresh].section)
         ),
     )
 

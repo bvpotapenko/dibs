@@ -2,8 +2,9 @@
 
 Tiers map to files, not directories (the lint config globs a flat
 tests/): unit = test_records / test_names / test_planfile /
-test_output, property = test_property_*, integration = test_store /
-test_transitions / test_queries, end-to-end = test_cli.
+test_output / test_views, property = test_property_*, integration =
+test_store / test_transitions / test_plansync / test_queries,
+end-to-end = test_cli.
 
 Skeleton state: every test below the pure tier raises
 NotImplementedError until its module lands (ARCHITECTURE §13); the
@@ -15,28 +16,22 @@ sqlite3 ':memory:'.
 """
 
 import hashlib
-from dataclasses import astuple
+import os
 
 import pytest
 
-from dibs import planfile, store, transitions
-from dibs.records import Agent, Status, Task
+from dibs import planfile, plansync, store, transitions
+from dibs.records import Agent
 from dibs.runtime import Context
 
 NOW = 1_700_000_000  # fixed clock for deterministic tests
 
-SECTION_LETTERS = 'ABCDEFGH'  # SSoT §8 lettering, enough for any fixture
-TOP_ID = '{0}{1}'  # section letter + ordinal, e.g. A3
-CHILD_ID = '{0}.{1}'  # parent id + ordinal, e.g. A3.1
 AUTHOR = 'human'  # SSoT §8: owner of a hand-checked [x]
 HASH_BYTES = 4  # entropy taken per pick() draw
-
-INSERT_TASK = """
-INSERT INTO tasks (
-    id, parent_id, seq, section, title, body, text_hash,
-    status, owner, claimed_at, done_at, done_note
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-"""
+BOARD = 'dibs-7f3a-9c2e'  # the fixture board's key (D20 shape)
+ONE_HAND = 1  # store.MAX_HAND_DEFAULT; widen per test via set_hand
+FIRST_STAMP = 1_000_000_000  # plan mtime in ns; resync bumps it
+BOARD_FILE = '.{0}.dibs'  # the board beside its plan (D2)
 
 # Exercises every SSoT §8 recognition rule: two sections, bodies,
 # nested children (one bodiless - a verify-warning case), a hand [x],
@@ -87,74 +82,42 @@ def pick(seed, index, size):
     return int.from_bytes(digest[:HASH_BYTES], 'big') % size
 
 
-def insert_task(conn, task):
-    """Write one task row.
+def resync(ctx, text, stamp):
+    """Rewrite the plan and apply it the way every command does (I9).
 
-    Stands in for the sync applier: ARCHITECTURE §5 gives no member that
-    creates task rows, so test setup writes them directly. Flagged in
-    the step-4 report; revisit when step 8 needs the real thing.
+    The mtime is set explicitly: two writes inside one clock tick would
+    share a stamp and the CAS would (correctly) skip the second.
     """
-    conn.execute(INSERT_TASK, astuple(task))
-    conn.commit()
-
-
-def plan_tasks(text):
-    """Task rows for a plan, with SSoT §8 ids (A1, A2, A2.1, B1 ...)."""
-    parsed = planfile.parse_plan(text)
-    sections = tuple(dict.fromkeys(entry.section for entry in parsed))
-    by_line = {}
-    rows = []
-    for entry in parsed:
-        parent = by_line.get(entry.parent_line)
-        kin = [
-            task for task in rows
-            if task.parent_id == parent and task.section == entry.section
-        ]
-        by_line[entry.line_no] = (
-            CHILD_ID.format(parent, len(kin) + 1) if parent
-            else TOP_ID.format(
-                SECTION_LETTERS[sections.index(entry.section)], len(kin) + 1,
-            )
-        )
-        rows.append(as_task(entry, by_line[entry.line_no], parent))
-    return tuple(rows)
-
-
-def as_task(entry, task_id, parent):
-    """One parsed item as the row a sync applier would insert (§8)."""
-    done = entry.checkbox == planfile.DONE_STATE
-    return Task(
-        task_id=task_id,
-        parent_id=parent,
-        seq=entry.line_no,
-        section=entry.section,
-        title=entry.title,
-        body=entry.body,
-        text_hash=planfile.title_hash(entry.title),
-        status=Status.DONE if done else Status.TODO,
-        owner=AUTHOR if done else None,
-        claimed_at=None,
-        done_at=None,
-        done_note='checked by the plan author' if done else None,
+    ctx.plan_path.write_text(text, encoding='utf-8')
+    os.utime(ctx.plan_path, ns=(stamp, stamp))
+    return plansync.apply_sync(
+        ctx.conn,
+        NOW,
+        planfile.parse_plan(text),
+        str(ctx.plan_path.stat().st_mtime_ns),
     )
+
+
+def open_plan(tmp_path, text, name='plan.md'):
+    """A board built exactly the way init builds one (§11, §6).
+
+    store.connect + ensure_schema, then the pipeline's own sync, then
+    the board-key CAS - no test-only writer of task rows exists any
+    more (ARCHITECTURE §13 step 8a).
+    """
+    plan_path = tmp_path / name
+    db_path = tmp_path / BOARD_FILE.format(name)
+    ctx = Context(store.connect(db_path), plan_path, db_path, None, NOW)
+    store.ensure_schema(ctx.conn)
+    resync(ctx, text, FIRST_STAMP)
+    plansync.open_board(ctx.conn, NOW, BOARD, ONE_HAND)
+    return ctx
 
 
 @pytest.fixture
 def board(tmp_path, plan_text):
-    """Initialized board on tmp_path -> runtime.Context (actor None).
-
-    Build: write plan.md from plan_text; store.connect on
-    tmp_path/'.plan.md.dibs' + ensure_schema; seed tasks from
-    planfile.parse_plan; return Context(conn, plan, db, None, NOW).
-    """
-    plan_path = tmp_path / 'plan.md'
-    plan_path.write_text(plan_text, encoding='utf-8')
-    db_path = tmp_path / '.plan.md.dibs'
-    conn = store.connect(db_path)
-    store.ensure_schema(conn)
-    for task in plan_tasks(plan_text):
-        insert_task(conn, task)
-    return Context(conn, plan_path, db_path, None, NOW)
+    """Initialized board on tmp_path -> runtime.Context (actor None)."""
+    return open_plan(tmp_path, plan_text)
 
 
 @pytest.fixture
@@ -163,7 +126,8 @@ def two_agents(board):
 
     brave-otter-1111 and happy-elephant-2222, via
     transitions.register_agent (never raw INSERT - I1 applies to test
-    setup too).
+    setup too). Registered after the board opened, so both cursors
+    start above the roster a fresh init writes (§9 SSoT).
     """
     pair = (
         Agent('brave-otter-1111', 'brave-otter'),

@@ -47,11 +47,11 @@ DUPLICATE_TWICE_TEXT = """- [ ] Same title
 """
 
 # Every line here is ordinary markdown that §8 does not recognize: a
-# link bullet, an unlisted state token, uppercase X, a two-space box,
-# and a missing separator space. All are prose (D5).
+# link bullet, an unlisted state token, a two-space box, and a missing
+# separator space. All are prose (D5). Uppercase '[X]' left this list
+# at Rev 9 - see test_parse_reads_uppercase_x_as_done.
 NOT_TASKS_TEXT = """- [Docs](https://example.invalid/x)
 - [-] dash is not a state
-- [X] uppercase is not a state
 - [  ] two spaces
 - [ ]NoSpace
 """
@@ -60,10 +60,12 @@ NOT_TASKS_TEXT = """- [Docs](https://example.invalid/x)
 # to if the recognition pattern were loose: the annotation decoys.
 LOOKALIKE_TITLES_TEXT = """- [ ] (https://example.invalid/x)
 - [ ] dash is not a state
-- [ ] uppercase is not a state
 - [ ] two spaces
 - [ ] NoSpace
 """
+
+# Rev 9 §8: '[X]' counts as '[x]', and the tool writes lowercase back.
+UPPER_DONE_TEXT = '- [X] Rename Lexer to Tokenizer\n'
 
 # A CRLF document: the CR belongs to the file, not to any title.
 CRLF_TEXT = '- [ ] Alpha\r\nprose line\r\n  indented body\r\n'
@@ -262,6 +264,19 @@ def test_parse_rejects_lookalike_bracket_lines():
     assert not planfile.parse_plan(NOT_TASKS_TEXT)
     # Even with rows whose titles match the lookalike text, byte-exact.
     assert planfile.annotate_lines(NOT_TASKS_TEXT, decoys) == NOT_TASKS_TEXT
+
+
+def test_parse_reads_uppercase_x_as_done():
+    """§8 (Rev 9): '[X]' counts as '[x]' - the token is lowercased at
+    parse, so nothing downstream ever sees the capital, and annotation
+    writes the lowercase form back (D4, I4)."""
+    parsed = planfile.parse_plan(UPPER_DONE_TEXT)
+
+    assert titles(parsed) == ('Rename Lexer to Tokenizer',)
+    assert parsed[0].checkbox == planfile.DONE_STATE
+    assert planfile.annotate_lines(
+        UPPER_DONE_TEXT, seed_tasks(parsed),
+    ) == '- [x] Rename Lexer to Tokenizer  ✓ human: checked in plan\n'
 
 
 def test_parse_bare_checkbox_still_recognized():
@@ -497,6 +512,35 @@ def test_sync_vanished_parent_promotes_its_child():
 
     assert diff.vanished == ('T0',)
     assert diff.reparented == (('T1', None),)
+
+
+def test_sync_refreshed_on_body_and_section_edits(plan_text):
+    """§8 (Rev 9): a reworded body or a renamed heading refreshes the
+    row's text and nothing else - no new task, no event-worthy state
+    change (D4, I6)."""
+    parsed = planfile.parse_plan(plan_text)
+    tasks = seed_tasks(parsed)
+    reworded = tuple(
+        replace(entry, body='A better briefing.')
+        if entry.title == PLAN_TITLES[0] else entry
+        for entry in parsed
+    )
+    renamed = tuple(
+        replace(entry, section='Lexer') if entry.section == 'Parser'
+        else entry
+        for entry in parsed
+    )
+
+    assert not planfile.compute_sync(parsed, tasks).refreshed
+    assert planfile.compute_sync(reworded, tasks).refreshed == (
+        ('T0', 'A better briefing.', 'Parser'),
+    )
+    assert tuple(
+        row[0] for row in planfile.compute_sync(renamed, tasks).refreshed
+    ) == ('T0', 'T1', 'T2', 'T3', 'T4')
+    # Text truth only: nothing else in the plan moved.
+    assert not planfile.compute_sync(reworded, tasks).new
+    assert not planfile.compute_sync(reworded, tasks).reordered
 
 
 def test_sync_regressed_checkbox_flagged(plan_text):

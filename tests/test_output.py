@@ -1,9 +1,13 @@
 """Unit: rendering, caps, hints, steers (C5, D14, I10; §13 step 7).
 
 Feed hand-built records/Reply values; no DB, no board fixture needed.
+The verify-preview cases moved to test_views with format_preview
+(ARCHITECTURE §13 step 8a).
 """
 
-from dibs import output, planfile
+import pytest
+
+from dibs import output
 from dibs.records import Event, EventKind
 from dibs.runtime import DibsError, Reply
 
@@ -13,32 +17,10 @@ ELEPHANT = 'happy-elephant-2222'
 OVERFLOWING = output.EVENT_CAP + 5  # enough events to trip the cap
 HINT = 'Next: dibs done A2 --note "what changed"'
 
-# Two tasks share a title, and the second has no body: one document
-# exercising both inline warnings (D21).
-DUPE_PLAN = """## Chores
-
-- [ ] Water the plants
-  Every pot on the balcony.
-- [ ] Water the plants
-"""
-
 
 def event(kind, task_id=None, text='', to_agent=None, agent=OTTER):
     """One journal row, shaped as the DB hands it back."""
     return Event(1, NOW, agent, kind, task_id, to_agent, text)
-
-
-def preview_of(text):
-    """The verify view for a plan document."""
-    return output.format_preview(planfile.parse_plan(text))
-
-
-def row_for(lines, task_id):
-    """The single preview line whose would-be ID is task_id."""
-    return next(
-        line for line in lines
-        if line.strip().split('  ')[0] == task_id
-    )
 
 
 def test_render_reply_lines_events_hint_order():
@@ -62,6 +44,19 @@ def test_render_reply_lines_events_hint_order():
     assert output.render_reply(
         Reply(lines=('ok',), events=(), hint=HINT),
     ).split('\n') == ['ok', HINT]
+
+
+def test_render_reply_drops_an_empty_hint():
+    """SSoT §6 join: a hint-less Reply renders as its bare lines, so
+    `export DIBS_AS=$(dibs join)` captures exactly the id - no trailing
+    blank line, no verb-specific branch anywhere (8a)."""
+    bare = Reply(lines=(OTTER,), events=(), hint='')
+
+    assert output.render_reply(bare) == OTTER
+    # And no hint template invites one: join fills no slot (D8).
+    assert 'join' not in output.HINTS
+    with pytest.raises(KeyError):
+        output.next_hint('join', {'actor': OTTER})
 
 
 def test_events_capped_with_overflow_hint():
@@ -118,6 +113,17 @@ def test_format_event_is_one_line():
     ) == 'reap A1 from brave-otter: "Fix the tokenizer"'
 
 
+def test_format_event_covers_the_plan_edits():
+    """SSoT §5 (Rev 9): the two halves of an author's edit each read as
+    one line - a task arrived, a task's line left (8a)."""
+    assert output.format_event(
+        event(EventKind.SYNC, 'A4', 'Ship the docs', agent='human'),
+    ) == 'new A4 from human: "Ship the docs"'
+    assert output.format_event(
+        event(EventKind.ORPHAN, 'A4', 'Ship the docs', agent='human'),
+    ) == 'orphaned A4 from human: "Ship the docs"'
+
+
 def test_next_hint_has_exact_syntax():
     """D14: hints carry runnable syntax (e.g. `dibs done A2 --note
     "..."`), not descriptions of it."""
@@ -126,55 +132,26 @@ def test_next_hint_has_exact_syntax():
     assert output.next_hint('init', {'key': 'dibs-7f3a-9c2e'}) == (
         'Hand each session: /dibs dibs-7f3a-9c2e'
     )
+    # A done that unlocked a parent hands over the ready claim (D7, D22).
+    assert output.next_hint(output.UNLOCKED, {'task': 'A2'}) == (
+        'Next: dibs claim --task A2'
+    )
     # A verb that omits a slot still emits a runnable shape, never a
     # KeyError (I10).
     assert 'dibs done <ID>' in output.next_hint('claim', {})
 
 
-def test_preview_shows_tree_and_waits_for(plan_text):
-    """D21/D22: format_preview renders sections, would-be IDs, the
-    nesting tree, and what each parent waits for."""
-    lines = preview_of(plan_text)
+def test_refusal_templates_steer_with_commands():
+    """C5/I10: every steer this module offers is a literal command, and
+    the two board-level ones landed with plansync (8a)."""
+    steers = (
+        output.RECLAIM.format('A2'),
+        output.LIST_BOARD,
+        output.SYNC_BOARD.format('dibs-7f3a-9c2e'),
+    )
 
-    assert lines[0] == 'sections: A Parser, B Docs'
-    assert tuple(
-        line.strip().split('  ')[0] for line in lines[1:]
-    ) == ('A1', 'A2', 'A2.1', 'A2.2', 'A3', 'B1')
-    # Nesting is the indent; gating is the derived waits-for (D22).
-    assert (
-        row_for(lines, 'A2.1').startswith(output.TREE_STEP),
-        row_for(lines, 'A2').startswith(output.TREE_STEP),
-    ) == (True, False)
-    assert (
-        row_for(lines, 'A2').endswith('waits for A2.1, A2.2'),
-        'waits for' in row_for(lines, 'A1'),
-    ) == (True, False)
-    # The author's own [x] shows as written, and never as a task dibs
-    # is waiting on.
-    assert '[x] Rename Lexer to Tokenizer' in row_for(lines, 'A3')
-
-
-def test_preview_letters_an_unheaded_plan():
-    """SSoT §8: no headings means one implicit, nameless section - it
-    still gets its letter, and the IDs still start at A1."""
-    lines = preview_of('- [ ] Buy milk\n  From the corner shop.\n')
-
-    assert lines == ('sections: A', 'A1  Buy milk')
-
-
-def test_preview_warns_bodiless_and_dupes(plan_text):
-    """D21: bodiless tasks and duplicate titles get inline warnings -
-    computed here, not in verbs (C5/C6). PLAN_TEXT's 'Cover the empty
-    file' child is the bodiless case."""
-    lines = preview_of(plan_text)
-    dupes = preview_of(DUPE_PLAN)
-
-    assert (
-        output.NO_BODY in row_for(lines, 'A2.2'),
-        output.NO_BODY in row_for(lines, 'A2.1'),
-    ) == (True, False)
-    assert output.DUPLICATE not in ''.join(lines)
-    # Both halves of a duplicate pair are flagged, not just the second.
-    assert output.DUPLICATE in row_for(dupes, 'A1')
-    assert output.DUPLICATE in row_for(dupes, 'A2')
-    assert output.NO_BODY in row_for(dupes, 'A2')
+    assert all(steer.startswith('dibs ') for steer in steers)
+    assert output.SYNC_BOARD.format('dibs-7f3a-9c2e') == (
+        'dibs sync --plan dibs-7f3a-9c2e'
+    )
+    assert 'init' in output.BOARD_EXISTS

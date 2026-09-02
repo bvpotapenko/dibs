@@ -19,7 +19,12 @@ class Status(str, Enum):
 
 
 class EventKind(str, Enum):
-    """Journal kinds as stored in events.kind (SSoT §5, I6)."""
+    """Journal kinds as stored in events.kind (SSoT §5, I6).
+
+    ORPHAN is the counterpart of SYNC: a line arrived, a line left
+    (text = the title in both cases); state truth, so both are journaled
+    while a body or section reword is not (D4, I6).
+    """
 
     INIT = 'init'
     SYNC = 'sync'
@@ -29,6 +34,7 @@ class EventKind(str, Enum):
     DROP = 'drop'
     NOTE = 'note'
     REAP = 'reap'
+    ORPHAN = 'orphan'
 
 
 @dataclass(frozen=True)

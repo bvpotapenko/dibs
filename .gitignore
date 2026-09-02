@@ -28,5 +28,5 @@ dist/
 # OS noise
 .DS_Store
 
-# Manager
+# PM and agents
 .reviews/

@@ -1,25 +1,32 @@
 """Property tier over transitions: invariants across random boards (§11).
 
 Seeded stdlib random (no hypothesis - see test_property_planfile
-docstring). Each case builds a fresh tmp board per seed.
+docstring). Each seed writes its own plan and opens its own WAL board
+through plansync, exactly the way init does: from step 8 on there is no
+test-only writer of task rows (ARCHITECTURE §11, §13 step 8a).
 """
 
 from itertools import groupby
 
-from conftest import NOW, insert_task, pick
+from conftest import NOW, open_plan, pick, resync
 
-from dibs import planfile, store, transitions
-from dibs.records import Agent, Status, Task
+from dibs import queries, transitions
+from dibs.records import Agent
 
 SEEDS = 20  # each seed builds and drains its own WAL board
 TREE_SIZE = 8
 FLAT_SIZE = 9
 SECTIONS = ('Parser', 'Docs', 'Build')
-BRANCHES = 2  # pick(...) % BRANCHES: half the tasks get a parent
+DEPTHS = 2  # a line nests at most one step deeper than the one above
 
 WORKER = 'brave-otter-1111'
-DB_NAME = 'seed{0}.dibs'
-TITLE = 'Task {0}'
+PLAN_NAME = 'seed{0}.md'
+HEAD = '## {0}'
+TASK = '{0}- [ ] Task {1}'
+BODY = '{0}  A briefing for task {1}.'
+STEP = '  '  # one nesting level in the generated document (D22)
+EOL = '\n'
+SHUFFLED_STAMP = 2_000_000_000  # a later mtime, so the CAS re-applies
 
 SET_HAND = "UPDATE meta SET value = ? WHERE key = 'max_hand'"
 SELECT_OPEN_CHILDREN = """
@@ -28,62 +35,50 @@ WHERE parent_id = ? AND status IN ('todo', 'doing')
 """
 
 
-def make_task(task_id, parent_id, seq, section):
-    """A todo row for a generated board."""
-    return Task(
-        task_id=task_id,
-        parent_id=parent_id,
-        seq=seq,
-        section=section,
-        title=TITLE.format(task_id),
-        body='',
-        text_hash=planfile.title_hash(TITLE.format(task_id)),
-        status=Status.TODO,
-        owner=None,
-        claimed_at=None,
-        done_at=None,
-        done_note=None,
-    )
-
-
-def tree_tasks(seed, size):
-    """A random forest in which every parent precedes its children."""
-    rows = []
+def tree_text(seed, size):
+    """A random nested plan; every parent precedes its children (D22)."""
+    lines = []
+    depths = [0]
     for index in range(size):
-        rows.append(make_task(
-            str(index),
-            rows[pick(seed, index, len(rows))].task_id
-            if rows and pick(seed, index + size, BRANCHES) else None,
-            index,
-            SECTIONS[pick(seed, index, len(SECTIONS))],
-        ))
-    return tuple(rows)
+        deeper = pick(seed, index, depths[-1] + DEPTHS)
+        depths.append(deeper if index else 0)
+        if not depths[-1]:
+            lines.append(HEAD.format(
+                SECTIONS[pick(seed, index + size, len(SECTIONS))],
+            ))
+        lines.append(TASK.format(STEP * depths[-1], index))
+        lines.append(BODY.format(STEP * depths[-1], index))
+    return EOL.join(lines) + EOL
 
 
-def flat_tasks(seed, size):
-    """A parentless board whose sections are mixed and seqs shuffled."""
+def flat_text(seed, size, order):
+    """One block per section, each block's tasks following `order`."""
+    blocks = {section: [] for section in SECTIONS}
+    for index in order:
+        section = SECTIONS[pick(seed, index + size, len(SECTIONS))]
+        blocks[section].append(index)
+    return EOL.join(
+        EOL.join((HEAD.format(name), *(
+            TASK.format('', member) for member in members
+        )))
+        for name, members in blocks.items() if members
+    ) + EOL
+
+
+def shuffle(seed, size):
+    """A seeded permutation of range(size) - reordering by hand (D7)."""
     draws = {index: pick(seed, index, size) for index in range(size)}
-    shuffled = sorted(draws, key=draws.get)
-    return tuple(
-        make_task(
-            str(index),
-            None,
-            shuffled[index],
-            SECTIONS[pick(seed, index + size, len(SECTIONS))],
-        )
-        for index in range(size)
-    )
+    return sorted(draws, key=draws.get)
 
 
-def build_board(tmp_path, seed, tasks):
-    """A fresh WAL board holding these rows, with one registered agent."""
-    conn = store.connect(tmp_path / DB_NAME.format(seed))
-    store.ensure_schema(conn)
-    conn.execute(SET_HAND, (str(len(tasks)),))
-    for task in tasks:
-        insert_task(conn, task)
-    transitions.register_agent(conn, Agent(WORKER, 'brave-otter'))
-    return conn
+def build_board(tmp_path, seed, text):
+    """A board holding this plan, hand widened, one agent registered."""
+    ctx = open_plan(tmp_path, text, PLAN_NAME.format(seed))
+    size = len(queries.board_snapshot(ctx.conn))
+    ctx.conn.execute(SET_HAND, (str(size),))
+    ctx.conn.commit()
+    transitions.register_agent(ctx.conn, Agent(WORKER, 'brave-otter'))
+    return ctx
 
 
 def open_children(conn, task_id):
@@ -127,26 +122,36 @@ def test_gating_invariant_random_trees(tmp_path):
     exists beneath it - and unlocks the moment its own last child
     finishes, regardless of siblings elsewhere."""
     for seed in range(SEEDS):
-        tasks = tree_tasks(seed, TREE_SIZE)
-        conn = build_board(tmp_path, seed, tasks)
+        ctx = build_board(tmp_path, seed, tree_text(seed, TREE_SIZE))
+        tasks = queries.board_snapshot(ctx.conn)
         parents = {task.parent_id for task in tasks} - {None}
 
         for parent_id in sorted(parents):
-            assert not transitions.claim(conn, WORKER, NOW, (parent_id,))
+            assert not transitions.claim(ctx.conn, WORKER, NOW, (parent_id,))
 
-        taken = claim_and_finish(conn)
+        taken = claim_and_finish(ctx.conn)
 
+        assert parents
         assert sorted(taken) == sorted(task.task_id for task in tasks)
         assert_children_first(tasks, taken)
 
 
 def test_claim_order_affinity_then_seq(tmp_path):
-    """D7 invariant: for shuffled boards, repeated no-arg claims by one
-    agent stay in-section while possible, then follow seq among
-    available tasks only (D22 filters first)."""
+    """D7 invariant: for boards whose ids no longer follow their line
+    order - the author reordered by hand between syncs - repeated no-arg
+    claims by one agent stay in-section while possible, then follow seq
+    among available tasks only (D22 filters first)."""
     for seed in range(SEEDS):
-        tasks = flat_tasks(seed, FLAT_SIZE)
-        picked = claim_all(build_board(tmp_path, seed, tasks))
+        ctx = build_board(
+            tmp_path, seed, flat_text(seed, FLAT_SIZE, range(FLAT_SIZE)),
+        )
+        resync(
+            ctx,
+            flat_text(seed, FLAT_SIZE, shuffle(seed, FLAT_SIZE)),
+            SHUFFLED_STAMP,
+        )
+        tasks = queries.board_snapshot(ctx.conn)
+        picked = claim_all(ctx.conn)
         sections = [task.section for task in picked]
 
         assert len(picked) == len(tasks)

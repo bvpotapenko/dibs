@@ -1,9 +1,9 @@
 """SQLite bootstrap plus the board-key registry (D2, D20).
 
-Level L1 (imports L0 + stdlib). Member budget 4 (ARCHITECTURE §3).
-SQL text lives only in store/transitions/queries, placeholders only
-(C2). DDL below is the SSoT §5 model made concrete; §5 is indicative,
-so column changes go through SSoT first.
+Level L1 (imports L0 + stdlib). Member budget 5 (ARCHITECTURE §3).
+SQL text lives only in store/transitions/plansync/queries,
+placeholders only (C2). DDL below is the SSoT §5 model made
+concrete; §5 is indicative, so column changes go through SSoT first.
 """
 
 import sqlite3
@@ -67,16 +67,24 @@ SCHEMA = (TASKS_DDL, AGENTS_DDL, EVENTS_DDL, META_DDL)
 SCHEMA_VERSION = '1'
 MAX_HAND_DEFAULT = '1'  # SSoT §13; init --max-hand overrides (D6)
 
+# The meta keys, named once so every caller spells them the same (D6,
+# D20, I9); plansync's two CAS statements bind them by name.
+BOARD_KEY = 'board_key'
+MAX_HAND = 'max_hand'
+PLAN_MTIME = 'plan_mtime'
+UNOPENED = ''  # board_key before init; the open_board CAS tests for it
+
 # Board facts seeded once; init and sync own their values afterwards, so
 # the seed must never overwrite (D6, D20, I9).
 META_DEFAULTS = (
-    ('board_key', ''),
-    ('max_hand', MAX_HAND_DEFAULT),
-    ('plan_mtime', '0'),
+    (BOARD_KEY, UNOPENED),
+    (MAX_HAND, MAX_HAND_DEFAULT),
+    (PLAN_MTIME, '0'),
     ('schema_version', SCHEMA_VERSION),
 )
 
 META_SEED = 'INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)'
+READ_META = 'SELECT value FROM meta WHERE key = ?'
 
 REGISTRY_DIR = Path('~/.local/state/dibs')  # D20; expanduser at use time
 
@@ -100,6 +108,11 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     for meta_row in META_DEFAULTS:
         conn.execute(META_SEED, meta_row)
     conn.commit()
+
+
+def read_meta(conn: sqlite3.Connection, key: str) -> str:
+    """Read one board fact; the seeds guarantee every key exists (§5)."""
+    return conn.execute(READ_META, (key,)).fetchone()[0]
 
 
 def registry_record(key: str, plan_path: Path) -> None:

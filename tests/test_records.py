@@ -17,6 +17,7 @@ def test_event_kinds_match_ssot():
     """SSoT §5: events.kind holds exactly these literals, in order."""
     expected = (
         'init', 'sync', 'join', 'claim', 'done', 'drop', 'note', 'reap',
+        'orphan',
     )
     assert tuple(kind.value for kind in EventKind) == expected
 

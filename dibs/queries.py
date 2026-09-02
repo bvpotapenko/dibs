@@ -16,10 +16,17 @@ NEAR_ENOUGH = 0.5  # two-char ids sharing a section letter score 0.5
 
 SNAPSHOT = 'SELECT * FROM tasks ORDER BY seq'
 
+# What is addressed to you always arrives; your own broadcasts never
+# do - the command that made them already said so (D14, §9 SSoT). An
+# actor of None matches nothing: every comparison against NULL is NULL,
+# so the guard is the WHERE clause, not a Python branch (C9).
 UNSEEN = """
 SELECT * FROM events
 WHERE id > (SELECT last_event_seen FROM agents WHERE id = :actor)
-  AND (to_agent IS NULL OR to_agent = :actor)
+  AND (
+      to_agent = :actor
+      OR (to_agent IS NULL AND agent <> :actor)
+  )
 ORDER BY id
 """
 
@@ -32,11 +39,14 @@ SET last_event_seen = (SELECT COALESCE(max(id), 0) FROM events)
 WHERE id = ?
 """
 
-LAST_REAP = """
+# Both filters live in the WHERE, so one statement serves list (cap
+# only) and claim's reap-history warning (cap 1, task, REAP) - C9.
+RECENT = """
 SELECT * FROM events
-WHERE task_id = ? AND kind = ?
+WHERE (:task IS NULL OR task_id = :task)
+  AND (:kind IS NULL OR kind = :kind)
 ORDER BY id DESC
-LIMIT 1
+LIMIT :cap
 """
 
 # Tolerance is normalization, never substitution: upper() and the
@@ -64,12 +74,17 @@ def board_snapshot(conn: Connection) -> tuple[Task, ...]:
     return tuple(Task(*row) for row in conn.execute(SNAPSHOT))
 
 
-def deliver_events(conn: Connection, actor: str) -> tuple[Event, ...]:
+def deliver_events(
+    conn: Connection,
+    actor: str | None,
+) -> tuple[Event, ...]:
     """Return actor's unseen events, advancing the cursor - one txn (D10).
 
-    Unseen means id > agents.last_event_seen, addressed to all or to
-    the actor; the cursor advance rides the same transaction (an honest
-    piggyback, ARCHITECTURE §5).
+    Unseen means id > agents.last_event_seen and either directed at the
+    actor or broadcast by somebody else; the cursor advance rides the
+    same transaction (an honest piggyback, ARCHITECTURE §5). An actor of
+    None - join, and a claim that minted its own identity - delivers
+    nothing and moves no cursor (ARCHITECTURE §6 step 8).
     """
     unseen = conn.execute(UNSEEN, {'actor': actor}).fetchall()
     conn.execute(ADVANCE_CURSOR, (actor,))
@@ -77,12 +92,24 @@ def deliver_events(conn: Connection, actor: str) -> tuple[Event, ...]:
     return tuple(Event(*row) for row in unseen)
 
 
-def prior_claim(conn: Connection, task_id: str) -> Event | None:
-    """Find reap history so a re-claimer gets warned (SSoT §6 claim row)."""
-    reaped = conn.execute(
-        LAST_REAP, (task_id, EventKind.REAP.value),
-    ).fetchone()
-    return Event(*reaped) if reaped else None
+def recent_events(
+    conn: Connection,
+    cap: int,
+    task_id: str | None = None,
+    kind: EventKind | None = None,
+) -> tuple[Event, ...]:
+    """Return the newest events first, capped, filters optional (D14).
+
+    Serves the human's list view (cap alone) and claim's reap-history
+    warning (cap 1, one task, REAP), so a re-claimer learns who held the
+    task before them (SSoT §6 claim row).
+    """
+    found = conn.execute(RECENT, {
+        'task': task_id,
+        'kind': kind.value if kind else None,
+        'cap': cap,
+    })
+    return tuple(Event(*row) for row in found)
 
 
 def resolve_task(conn: Connection, raw: str) -> Task:
