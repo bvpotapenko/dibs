@@ -5,20 +5,18 @@ helper, seeds 0..N) - dev deps stay at flake8/WPS/ruff/pytest. If
 hypothesis is ever adopted, these become @given strategies; amend
 pyproject dev extras first.
 
-The seeded generator draws from hashlib rather than the random module:
-ruff's bandit bundle flags random for non-crypto use (S311) and the
-tests per-file-ignores cover only S101/D. Determinism is what these
-tests need, and sha256(seed:index) gives it.
+The seeded generator draws on conftest.pick rather than the random
+module: ruff's bandit bundle flags random for non-crypto use (S311) and
+the tests per-file-ignores cover only S101/D.
 """
 
-import hashlib
+from conftest import pick
 
 from dibs import planfile
 from dibs.records import Status, Task
 
 SEEDS = 100
 DOC_LINES = 40
-HASH_BYTES = 4
 
 LINE_POOL = (
     'Plain prose line {0}.',
@@ -44,12 +42,6 @@ TASK_ID = 'T{0}'  # test-local ids; planfile never mints them
 
 STATUSES = (Status.TODO, Status.DOING, Status.DONE)
 EMPTY_SYNC = planfile.SyncPlan((), (), (), (), (), ())
-
-
-def pick(seed, index, size):
-    """Deterministic index from (seed, index) - no PRNG module needed."""
-    digest = hashlib.sha256(bytes((seed, index))).digest()
-    return int.from_bytes(digest[:HASH_BYTES], 'big') % size
 
 
 def imported(entry):
