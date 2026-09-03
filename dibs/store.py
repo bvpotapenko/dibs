@@ -6,8 +6,8 @@ SQL text lives only in store/transitions/queries, placeholders only
 so column changes go through SSoT first.
 """
 
+import sqlite3
 from pathlib import Path
-from sqlite3 import Connection
 
 PRAGMAS = (
     'PRAGMA journal_mode=WAL',
@@ -15,6 +15,8 @@ PRAGMAS = (
     'PRAGMA foreign_keys=ON',
 )
 
+# Column order is load-bearing: it mirrors records.Task field order so
+# `SELECT *` / `RETURNING *` rows build a Task positionally (L2 modules).
 TASKS_DDL = """
 CREATE TABLE IF NOT EXISTS tasks (
     id         TEXT PRIMARY KEY,
@@ -43,6 +45,7 @@ CREATE TABLE IF NOT EXISTS agents (
 )
 """
 
+# Column order mirrors records.Event field order (same reason as tasks).
 EVENTS_DDL = """
 CREATE TABLE IF NOT EXISTS events (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -64,21 +67,41 @@ CREATE TABLE IF NOT EXISTS meta (
 
 SCHEMA = (TASKS_DDL, AGENTS_DDL, EVENTS_DDL, META_DDL)
 
+# Seeded once; OR IGNORE keeps values a later command has set (D6, I9).
+META_SEED_SQL = 'INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)'
+META_DEFAULTS = (
+    ('board_key', ''),
+    ('max_hand', '1'),
+    ('plan_mtime', '0'),
+    ('schema_version', '1'),
+)
+
 REGISTRY_DIR = Path('~/.local/state/dibs')  # D20; expanduser at use time
 
 
-def connect(db_path: Path) -> Connection:
-    """Open the board DB with every PRAGMAS entry applied (D2)."""
-    raise NotImplementedError('ARCHITECTURE §13 step 2: store.connect')
+def connect(db_path: Path) -> sqlite3.Connection:
+    """Open the board DB with every PRAGMAS entry applied (D2).
+
+    Rows come back as sqlite3.Row: positional for record building,
+    by name for the odd column peek.
+    """
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    for pragma in PRAGMAS:
+        conn.execute(pragma)
+    return conn
 
 
-def ensure_schema(conn: Connection) -> None:
+def ensure_schema(conn: sqlite3.Connection) -> None:
     """Create the SSoT §5 tables; idempotent.
 
     Meta rows carried: board_key (D20), max_hand (D6), plan_mtime (I9),
     schema_version.
     """
-    raise NotImplementedError('ARCHITECTURE §13 step 2: store.ensure_schema')
+    with conn:
+        for ddl in SCHEMA:
+            conn.execute(ddl)
+        conn.executemany(META_SEED_SQL, META_DEFAULTS)
 
 
 def registry_record(key: str, plan_path: Path) -> None:
@@ -87,9 +110,15 @@ def registry_record(key: str, plan_path: Path) -> None:
     The registry is a cache of the board's own meta truth; it self-heals
     on drift whenever a path-addressed command runs (D20).
     """
-    raise NotImplementedError('ARCHITECTURE §13 step 2: store.registry_record')
+    registry = REGISTRY_DIR.expanduser()
+    registry.mkdir(parents=True, exist_ok=True)
+    (registry / key).write_text(str(plan_path.resolve()))
 
 
 def registry_lookup(key: str) -> Path | None:
     """Resolve a board key to its plan path, None if unknown/stale (D20)."""
-    raise NotImplementedError('ARCHITECTURE §13 step 2: store.registry_lookup')
+    try:
+        recorded = Path((REGISTRY_DIR.expanduser() / key).read_text().strip())
+    except OSError:
+        return None
+    return recorded if recorded.is_file() else None

@@ -35,9 +35,9 @@ def trace_path(plan_path: Path | None, now: int) -> Path:
     Unbound invocations fall back to the relative
     .logs/unbound.<UTC date>.jsonl so addressing failures stay visible.
     """
-    raise NotImplementedError('ARCHITECTURE §13 step 9: trace.trace_path')
+    raise NotImplementedError('ARCHITECTURE §13 step 11: trace.trace_path')
 
 
 def write_trace(path: Path, record: TraceRecord) -> None:
     """Append one JSON line, creating .logs/ as needed; never raise (D23)."""
-    raise NotImplementedError('ARCHITECTURE §13 step 9: trace.write_trace')
+    raise NotImplementedError('ARCHITECTURE §13 step 11: trace.write_trace')

@@ -26,9 +26,9 @@ def test_mint_identity_retries_on_collision(board):
     collide once), then assert mint_identity still lands and the id
     ends in ID_DIGITS digits.
     """
-    raise NotImplementedError('needs names.mint_identity (§13 step 6)')
+    raise NotImplementedError('needs names.mint_identity (§13 step 8)')
 
 
 def test_mint_board_key_format():
     """D20/§13: 'dibs-' + 8 hex chars in two dash-separated groups."""
-    raise NotImplementedError('needs names.mint_board_key (§13 step 6)')
+    raise NotImplementedError('needs names.mint_board_key (§13 step 8)')

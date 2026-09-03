@@ -3,7 +3,7 @@
   ____/ (_) /_  _____
  / __  / / __ \/ ___/
 / /_/ / / /_/ (__  )
-\__,_/_/_.___/____/      [ ]  ->  [~ happy-elephant]  ->  [x]
+\__,_/_/_.___/____/      [ ]  ->  [~ happy-elephant]  ->  [✓]
 ```
 
 Call dibs on tasks. A tiny CLI board so several AI agents can work one `plan.md` in parallel without doing the same task twice.
@@ -49,4 +49,4 @@ dibs claim                            # ... until it says no tasks remain
 
 Boards are per plan (`.plan.md.dibs` beside it), so unrelated swarms run side by side. Keys and agent names are grooves against drift, not security; a confused agent can cause delay, never corruption. Decisions and invariants: `SSoT.md`. Implementation reference: `ARCHITECTURE.md`. Longer walkthrough: `GUIDE.md`.
 
-Status: design phase — interface specified, implementation pending.
+Status: implementation in progress — interface fixed (SSoT Rev 9); `docs/ARCHITECTURE.md` §13 tracks what has landed.
