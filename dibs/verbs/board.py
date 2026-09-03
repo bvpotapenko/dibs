@@ -13,36 +13,37 @@ from dibs.runtime import Context, Reply
 def init_board(ctx: Context, args: Namespace) -> Reply:
     """Create the board from a parsed plan; print key + roster (SSoT §6).
 
-    Parse once, ensure schema, mint + register the board key (D20),
-    honor --max-hand (D6), annotate unconditionally (§6 note). Refuses
-    an existing board, steering to sync.
+    names.mint_board_key -> plansync.found_board (False -> steer
+    BOARD_EXISTS pointing to sync) -> plansync.apply_sync (everything is
+    new, D24) -> store.registry_record -> views.format_board + handoff.
     """
-    raise NotImplementedError('ARCHITECTURE §13 step 8: init_board')
+    raise NotImplementedError('ARCHITECTURE §13 step 10: init_board')
 
 
-def verify_board(ctx: Context, args: Namespace) -> Reply:
-    """Render the parse preview; create and touch nothing (D21, D22).
+def verify_board(args: Namespace) -> Reply:
+    """Render the parse preview; create and touch nothing (D21, D24).
 
-    Pure pipeline: read file, planfile.parse_plan, output.format_preview.
-    No board, no identity, no events; an existing board is noted in one
-    line pointing to list.
+    The one pure verb, so no Context: read file, planfile.parse_plan,
+    planfile.compute_sync(items, ()) for would-be ids, views.format_board
+    on plan.rows with key ''. No board, no identity, no events; an
+    existing board file is noted in one line pointing to list.
     """
-    raise NotImplementedError('ARCHITECTURE §13 step 8: verify_board')
+    raise NotImplementedError('ARCHITECTURE §13 step 10: verify_board')
 
 
 def sync_board(ctx: Context, args: Namespace) -> Reply:
     """Reconcile plan text with the board per the SSoT §8 sync table.
 
-    Orchestrates planfile.parse_plan + compute_sync, transitions
-    (import_author_done and friends), then annotation; ambiguities are
-    reported, never guessed (I5, I9, D22).
+    planfile.parse_plan -> plansync.apply_sync (one transaction,
+    C11) -> views.format_sync; ambiguities are reported, never guessed
+    (I5, I9, D22). Annotation is the pipeline's settle tail (§6).
     """
-    raise NotImplementedError('ARCHITECTURE §13 step 8: sync_board')
+    raise NotImplementedError('ARCHITECTURE §13 step 10: sync_board')
 
 
 def note_verb(ctx: Context, args: Namespace) -> Reply:
     """Broadcast, or direct with --for, one note event (D10, SSoT §6)."""
-    raise NotImplementedError('ARCHITECTURE §13 step 8: note_verb')
+    raise NotImplementedError('ARCHITECTURE §13 step 10: note_verb')
 
 
 def list_board(ctx: Context, args: Namespace) -> Reply:
@@ -52,4 +53,4 @@ def list_board(ctx: Context, args: Namespace) -> Reply:
     parents show 2/3-style progress (D22); reaping already ran via the
     pipeline (C10).
     """
-    raise NotImplementedError('ARCHITECTURE §13 step 8: list_board')
+    raise NotImplementedError('ARCHITECTURE §13 step 10: list_board')

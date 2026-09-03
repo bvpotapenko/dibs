@@ -1,7 +1,7 @@
 """Domain rows: frozen dataclasses and str-enums (SSoT §5).
 
 Data here, behavior in module functions; no methods, no inheritance
-beyond Enum (ARCHITECTURE §1). Level L0: stdlib only. Member budget 5
+beyond Enum (ARCHITECTURE §1). Level L0: stdlib only. Member budget 6
 (ARCHITECTURE §3).
 """
 
@@ -68,3 +68,18 @@ class Agent:
 
     agent_id: str
     name: str
+
+
+@dataclass(frozen=True)
+class Board:
+    """One read of the board: meta facts, rows in seq order, recent events.
+
+    Born whole in queries.board_snapshot (ARCHITECTURE §5); key is ''
+    until init founds the board (D20, D24).
+    """
+
+    key: str
+    max_hand: int
+    plan_mtime: int
+    tasks: tuple[Task, ...]
+    events: tuple[Event, ...]

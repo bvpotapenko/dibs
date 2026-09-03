@@ -1,7 +1,7 @@
 # dibs — Single Source of Truth
 
-**Status:** design phase — no code written yet.
-**Rev:** 8 — (r2) small-context workers: D16–D17; D5, D7, D8, D14, I10. (r3) implementation architecture: D3, §2 budget; `ARCHITECTURE.md`. (r4) parallel plans + skill invocation: D2, D8, D13; D18–D19. (r5) board keys, hand limit, verify: D6, D18–D19 amended; D20–D21 new; §2, §5–§6, §8, §10–§13 touched. (r6) leaves-first prerequisites: D22 new; D6–D7 amended; §5–§6, §8, §10–§13 touched. (r7) author skill `dibs-plan`: D1, D13 amended; §2 budget; §10 split into two skill specs. (r8) invocation tracing for debugging: D23 new; §6 env note; §12 + deferred `log --jsonl`.
+**Status:** implementation in progress — `ARCHITECTURE.md` §13 tracks which steps have landed.
+**Rev:** 9 — (r9) one import path + budgets met by measurement: D24 new; §2 budget restated; §5 SQLite floor + `plan_mtime`; §8 sync is one transaction, ids minted in one pass, cached text refreshed; I5 clarified; §13 id lettering settled. (r8) invocation tracing for debugging: D23 new; §6 env note; §12 + deferred `log --jsonl`. Earlier: (r2) small-context workers: D16–D17; D5, D7, D8, D14, I10. (r3) implementation architecture: D3, §2 budget; `ARCHITECTURE.md`. (r4) parallel plans + skill invocation: D2, D8, D13; D18–D19. (r5) board keys, hand limit, verify: D6, D18–D19 amended; D20–D21 new; §2, §5–§6, §8, §10–§13 touched. (r6) leaves-first prerequisites: D22 new; D6–D7 amended; §5–§6, §8, §10–§13 touched. (r7) author skill `dibs-plan`: D1, D13 amended; §2 budget; §10 split into two skill specs. 
 **Precedence:** this file supersedes conversation history, README prose, and code comments. When anything disagrees with this file, this file wins until amended here.
 
 ---
@@ -18,7 +18,7 @@ A tiny CLI, **`dibs`**, backed by SQLite sitting next to the plan. Agents never 
 
 For small-context local workers (a first-class target, D16) the board doubles as **external memory**: the global picture lives in the DB, each worker's context holds one briefing plus its own work, and a single agent in a claim → work → done → die → respawn loop is served as well as N parallel ones.
 
-**Budget:** a stdlib-only package, target ~600 physical lines across ≤15 small files (hard stop and re-scope at 1000), shipped as a single file `dibs.pyz`; two skill files (`dibs`, `dibs-plan`); one board file per plan.
+**Budget:** a stdlib-only package shipped as a single file `dibs.pyz`; two skill files (`dibs`, `dibs-plan`); one board file per plan. Size is measured in *code lines* (non-blank, non-comment, non-docstring): target ~1000, hard stop and re-scope at 1500, across ≤18 small files. Physical lines run about 2× code lines by construction — every member carries a docstring and every SQL statement a placeholder legend (D3) — so they are not the budget. Measured at Rev 9 with four of ten modules landed: 679 code / 1222 physical lines in 15 files.
 **Not building (v1):** daemon, heartbeats, point-to-point mail, dependency graph, auth, config file, multi-machine support. See §12 for revisit triggers.
 
 ---
@@ -48,6 +48,7 @@ For small-context local workers (a first-class target, D16) the board doubles as
 - **D21 — Verify before trust.** `dibs verify <plan>` renders how dibs would parse the plan — sections, would-be IDs, titles, body presence, hand-written `[x]`, plus warnings (bodiless tasks, duplicate titles) — while creating and touching **nothing**: no board, no events, no identity required. Parse behavior is inspectable before `init` and is never a surprise. If a board already exists, verify says so in one line and points to `list`.
 - **D22 — Leaves-first prerequisites.** A checkbox nested under a checkbox is a *prerequisite* of it: the parent becomes claimable only when every checkbox nested beneath it is done (recursively, since each child is gated by its own children). This is the ordinary outline reading — big deliverable on top, its parts beneath, top line finishes last — so there is nothing new to teach authors. Fan-in is native: one test waits on 3–10 units. Gating is per-parent, not per-level: a parent unlocks the moment *its* children finish, regardless of siblings elsewhere. Orphaned children (lines deleted from the plan) do not block — they left the plan. Pure grouping with no work of its own is a heading or a plain bullet, never a checkbox; a checkbox umbrella is merely claimed last — harmless, but noisy. Gating is *derived* state: never written into the file, always visible in `list` (`2/3` on gated parents) and `verify` (tree with a waits-for column). Structure (`parent_id`) is text truth and flows md→db on sync (D4). The dual gap — one shared prerequisite before many tasks (fan-out) — is answered by splitting the prerequisite per consumer, by document order as a nudge (D7), or by the deferred heading barrier (§12).
 - **D23 — Trace is a lens, never a ledger.** With env `DIBS_TRACE` set (non-empty; `DIBS_TRACE=1` canonical — launcher-set, like `DIBS_AS`/`DIBS_BOARD`), every CLI invocation appends one JSON line — ts, argv, actor, plan, verb, exit code, outcome summary — to `.logs/<plan-name>.<UTC date>.jsonl` beside the resolved plan; unresolved invocations fall back to `.logs/unbound.<UTC date>.jsonl` under the CWD, so even addressing failures stay visible. Purpose: understanding what agents *attempt* — refusals and errors included, which the mutation-only journal (I6) deliberately omits. Not a second truth: the DB remains sole authority for state (D4), and nothing ever reads a trace back. Best-effort by contract: a trace failure never changes behavior, output, or exit code. Gitignore `.logs/` next to `.*.dibs*` (D2).
+- **D24 — One import path.** Text enters the board through exactly one door: sync. `init` is sync against an empty board (found the board — key, hand limit — then import everything as new); `verify` is the same diff computed against no rows and rendered exactly as `list` renders a live board, so what the author previews is what `init` creates and what `list` will show. A sync is one transaction that reads the board under the write lock it will write with, mints ids for new lines in document order (a child under a brand-new parent gets its dotted id in the same pass), refreshes every text-cached column of every matched line — order, section, nesting, title spelling, *body* — and touches no state column. Consequence for authors: rewording a briefing, renaming a heading, re-nesting, or reordering never disturbs ids or ownership (D4, I5); only retitling does (§8).
 
 ---
 
@@ -59,7 +60,7 @@ These must hold at all times; any change that breaks one requires amending this 
 - **I2 — One owner max.** A task has at most one owner; `done` and `drop` require ownership, enforced in the WHERE clause, not in application logic.
 - **I3 — Agents never write plan.md.**
 - **I4 — Byte preservation.** Tool writes to `plan.md` modify only lines matching its own annotation grammar (§8); all other content is untouched.
-- **I5 — IDs are stable.** Once assigned, a task ID is never renumbered or reused. Sync adds and orphans; it never deletes.
+- **I5 — IDs are stable.** Once assigned, a task ID is never renumbered or reused. Sync adds and orphans; it never deletes. New ids are minted against *every* existing row, orphaned ones included, so an orphaned `A2` keeps its ordinal forever and the next task in that section is `A3`.
 - **I6 — Append-only journal.** Every mutation writes exactly one event. Events are never updated or deleted.
 - **I7 — IDs stay private by hygiene.** Session ids appear only in the owning agent's own command I/O; all shared surfaces (plan.md, list output, events shown to others) display names only.
 - **I8 — Bad agents cause delay, never corruption.** A crashed, stalled, or confused agent can at worst hold a task until the TTL; reaping guarantees every task eventually returns to `todo`. Correctness never depends on agent cooperation.
@@ -106,7 +107,7 @@ events (
 );
 ```
 
-Required pragmas at every connection: `journal_mode=WAL`, `busy_timeout=5000`. A small `meta(key, value)` table carries board facts: `board_key` (D20), `max_hand` (D6), `plan_mtime`, `schema_version`.
+Required pragmas at every connection: `journal_mode=WAL`, `busy_timeout=5000`. A small `meta(key, value)` table carries board facts: `board_key` (D20; `''` until `init` founds the board), `max_hand` (D6), `plan_mtime` (the plan file's `st_mtime_ns` as last synced, I9), `schema_version`. SQLite floor: 3.35 with the JSON functions — `RETURNING`, `INSERT … ON CONFLICT DO UPDATE`, and `json_each` are how single statements carry the whole decision (I1, D6); the CLI refuses older libraries up front with a steer rather than failing mid-command.
 
 ---
 
@@ -146,17 +147,18 @@ Two short hardcoded word lists (~50 friendly adjectives × ~50 animals ≈ 2,500
 
 **Body standard (D17)** — a content norm, not a parsing rule: each body should brief a context-poor worker completely — file paths, the observed symptom, the acceptance criterion. Sync never enforces this; the skill teaches it, and a deferred lint may warn (§12).
 
-**Sync semantics** (mtime-triggered, hash-matched on normalized title; duplicates matched by order):
+**Sync semantics** (mtime-triggered, hash-matched on normalized title; duplicates matched by order; one transaction, D24). Matching decides identity; everything else on a matched line — position, section, nesting, title spelling, body — is text truth and is simply re-cached from the file:
 
 | File says | DB says | Result |
 |---|---|---|
-| new checkbox line | — | new task, next free ID in its section |
+| new checkbox line | — | new task, next free ID under its parent or in its section — minted in document order in the same pass, so a child under a new parent gets `A5.1` alongside `A5` |
 | `[x]` | todo | imported as done, owner `human` |
 | `[ ]` | doing / done | DB wins, line re-annotated, warning emitted |
 | line vanished | any | task → `orphaned`: excluded from claim, kept in list, flagged |
 | title edited | — | old task orphaned + new task created; both flagged (accepted v1 limitation) |
 | lines reordered | — | `seq` updated; IDs untouched (D7, I5) |
 | line re-indented under another checkbox | — | `parent_id` updated; ID untouched — structure is text truth (D4, D22) |
+| body reworded, heading renamed, title re-spelled (same normalized hash) | — | cached `body` / `section` / `title` refreshed; ID, status, owner untouched (D4, D17) |
 | `[x]` on a parent with open children | todo | imported as done (author's call), with a warning; the children stay independently claimable |
 
 **Escape hatch** for pure-prose plans: a one-time LLM normalization pass into checkboxes *before* `init`. External to the tool; the parser never gets smarter than the rules above.
@@ -227,5 +229,5 @@ Build these the day their trigger fires, not before:
 - **Hand limit default:** `MAX_HAND_DEFAULT = 1` (per-board override at `init --max-hand`, D6).
 - **Key format & registry:** `dibs-` + 8 hex chars in two groups (D20); registry directory `~/.local/state/dibs/`.
 - **Piggyback cap:** show up to ~15 unseen events, then "… and N more — run `dibs list`."
-- **ID cosmetics:** `A3` (lettered section + ordinal) vs. passing through numbered headings (`A1.34`). Default: lettered. Children: dotted `A3.1`, `A3.1.2` — the tree shows in every steer (D22).
+- **ID cosmetics (settled r9):** lettered sections by first appearance among tasks, `A3` = letter + ordinal; past `Z` the letters continue `AA, AB, …` (spreadsheet columns) — the grammar is `[A-Z]+[0-9]+(\.[0-9]+)*`. Children: dotted `A3.1`, `A3.1.2` — the tree shows in every steer (D22).
 - **Word lists:** final adjective/animal curation.

@@ -15,17 +15,17 @@ def join_session(ctx: Context, args: Namespace) -> Reply:
 
     Orchestrates names.mint_identity + output.
     """
-    raise NotImplementedError('ARCHITECTURE §13 step 8: join_session')
+    raise NotImplementedError('ARCHITECTURE §13 step 10: join_session')
 
 
 def claim_task(ctx: Context, args: Namespace) -> Reply:
     """Claim next available task or an exact bundle; reply is the briefing.
 
-    Orchestrates transitions.claim, queries.prior_claim (reap-history
-    warning), and the three-way zero-row diagnosis steers (D6, D7,
-    D16, D22, SSoT §6).
+    names.mint_identity when no identity was supplied (D8), then
+    transitions.claim; () -> raise output.steer(*queries.claim_refusal)
+    (D6, D22); queries.prior_claim per task; views.format_briefing.
     """
-    raise NotImplementedError('ARCHITECTURE §13 step 8: claim_task')
+    raise NotImplementedError('ARCHITECTURE §13 step 10: claim_task')
 
 
 def done_task(ctx: Context, args: Namespace) -> Reply:
@@ -35,9 +35,9 @@ def done_task(ctx: Context, args: Namespace) -> Reply:
     queries.newly_unlocked (ready claim hint on unlock, D7/D22), and
     the plan annotation step (§6 pipeline step 9).
     """
-    raise NotImplementedError('ARCHITECTURE §13 step 8: done_task')
+    raise NotImplementedError('ARCHITECTURE §13 step 10: done_task')
 
 
 def drop_task(ctx: Context, args: Namespace) -> Reply:
     """Release a held task back to todo, logging why (SSoT §6, D9)."""
-    raise NotImplementedError('ARCHITECTURE §13 step 8: drop_task')
+    raise NotImplementedError('ARCHITECTURE §13 step 10: drop_task')

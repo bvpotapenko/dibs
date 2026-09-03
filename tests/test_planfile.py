@@ -370,3 +370,19 @@ def test_sync_duplicate_titles_match_in_order():
     only(compute_sync(ticked, rows), checked=('A2',))
     shorter = compute_sync(parse_plan('- [ ] same\n- [ ] same\n'), rows)
     only(shorter, vanished=('A3',))
+
+
+def test_mint_id_letters_ordinals_and_children():
+    """§8/I5 (§13 step 5): letters by first appearance; ordinal = max
+    under the prefix + 1 over ALL rows, orphaned included; a child of A3
+    is A3.N; a child of a row minted in the same pass gets its dotted id
+    immediately; the 27th section letters AA."""
+    raise NotImplementedError('needs planfile.mint_id (§13 step 5)')
+
+
+def test_sync_rows_refresh_text_keep_state(plan_text):
+    """Rev 9 SyncPlan.rows: for every line, in document order - matched
+    rows carry refreshed seq/section/parent_id/title/body and untouched
+    status/owner/claimed_at/done_*; new rows are todo with minted ids;
+    `new` lists their ids; a new [x] line appears in `checked`."""
+    raise NotImplementedError('needs SyncPlan.rows (§13 step 5)')

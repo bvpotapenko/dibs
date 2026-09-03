@@ -36,13 +36,15 @@ ANIMALS = (
 )
 
 
-def mint_identity(conn: Connection) -> Agent:
+def mint_identity(conn: Connection, now: int) -> Agent:
     """Pick adjective-animal-NNNN, retrying register_agent on UNIQUE (I1).
+
+    `now` stamps the join event - one clock per invocation (I6).
 
     Name for display, id for command input (D8, I7); scope is this
     board only (SSoT §7).
     """
-    raise NotImplementedError('ARCHITECTURE §13 step 6: mint_identity')
+    raise NotImplementedError('ARCHITECTURE §13 step 8: mint_identity')
 
 
 def mint_board_key() -> str:
@@ -51,4 +53,4 @@ def mint_board_key() -> str:
     The dibs- prefix makes every handoff line its own skill trigger
     (D20); truth lives in meta.board_key, the registry is a cache.
     """
-    raise NotImplementedError('ARCHITECTURE §13 step 6: mint_board_key')
+    raise NotImplementedError('ARCHITECTURE §13 step 8: mint_board_key')
