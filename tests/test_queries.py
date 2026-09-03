@@ -172,15 +172,17 @@ def test_board_snapshot_carries_meta_and_events(board):
     assert ids == sorted(ids)
 
 
-def test_claim_refusal_five_kinds(board, two_agents):
+def test_claim_refusal_every_kind(board, two_agents):
     """D6/D22/C9: the same zero-row claim is explained as TAKEN (holder
-    named), GATED (children named), HAND_FULL (held ids), WAITING
-    (holders of what remaining todo rows wait on), EMPTY - one CASE picks,
-    one names query per kind; the names feed output.steer verbatim."""
+    named), GATED (children named), OVERSIZED (a bundle no hand takes:
+    size, hand, first member), HAND_FULL (held ids), WAITING (holders of
+    what remaining todo rows wait on), EMPTY - one CASE picks, one names
+    query per kind; the names feed output.steer verbatim."""
     otter, elephant = two_agents
     assert transitions.claim(board.conn, otter.agent_id, NOW, ('A1',))
     taken = refused(board, elephant.agent_id, ('A1', 'A2.1'))  # A1 is held
     gated = refused(board, elephant.agent_id, ('A2',))  # open children
+    oversized = refused(board, elephant.agent_id, ('A2.2', 'A2.1'))  # hand 1
     hand_full = refused(board, otter.agent_id)  # otter holds A1, max_hand 1
     set_max_hand(board, 3)
     assert transitions.claim(
@@ -192,10 +194,11 @@ def test_claim_refusal_five_kinds(board, two_agents):
     assert transitions.claim(board.conn, elephant.agent_id, NOW, ('A2',))
     finish_all(board, elephant.agent_id, 'A2')
     empty = refused(board, otter.agent_id)  # no todo rows remain
-    seen = [taken, gated, hand_full, waiting, empty]
+    seen = [taken, gated, oversized, hand_full, waiting, empty]
     assert seen == [
         (Refusal.TAKEN, ('A1', otter.name)),
         (Refusal.GATED, ('A2', 'A2.1, A2.2', 'A2.1')),
+        (Refusal.OVERSIZED, ('2', '1', 'A2.2')),  # first member as typed
         (Refusal.HAND_FULL, ('A1', 'A1', '1')),
         (Refusal.WAITING, ('1', 'A2.1, A2.2', elephant.name)),
         (Refusal.EMPTY, ()),

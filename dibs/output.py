@@ -22,6 +22,7 @@ class Refusal(str, Enum):
     NOT_OWNER = 'not_owner'
     TAKEN = 'taken'
     GATED = 'gated'
+    OVERSIZED = 'oversized'
     HAND_FULL = 'hand_full'
     WAITING = 'waiting'
     EMPTY = 'empty'
@@ -54,6 +55,12 @@ CATALOG = MappingProxyType({
     # (parent, open children, first open child): leaves first (D22)
     Refusal.GATED: (
         '{0} waits on its open children: {1}.',
+        'dibs claim --task {2}',
+    ),
+    # (bundle size, max_hand, first member): the bundle can never fit (D6)
+    Refusal.OVERSIZED: (
+        'A bundle of {0} exceeds the hand of {1} - claim at most {1} at '
+        'a time.',
         'dibs claim --task {2}',
     ),
     # (held ids, first held id, max_hand): finish or drop first (D6)

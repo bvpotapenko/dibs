@@ -15,6 +15,7 @@ SAMPLE_NAMES = MappingProxyType({
     Refusal.NOT_OWNER: ('A2', 'brave-otter'),
     Refusal.TAKEN: ('A1', 'brave-otter'),
     Refusal.GATED: ('A2', 'A2.1, A2.2', 'A2.1'),
+    Refusal.OVERSIZED: ('3', '1', 'A1'),
     Refusal.HAND_FULL: ('A2', 'A2', '1'),
     Refusal.WAITING: ('4', 'A3', 'brave-otter'),
     Refusal.EMPTY: (),

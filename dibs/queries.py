@@ -19,6 +19,8 @@ from dibs.records import Board, Event, EventKind, Status, Task
 
 # Take the write lock up front: the cursor advance rides the read (D2).
 BEGIN = 'BEGIN IMMEDIATE'
+# A deferred transaction: one snapshot for a two-statement read, no lock.
+BEGIN_READ = 'BEGIN'
 ID_TAIL = f'{digits}.'  # what follows the letters of an id (SSoT §13)
 
 META_SQL = 'SELECT key, value FROM meta'
@@ -86,7 +88,8 @@ WHERE parent.id = (SELECT parent_id FROM tasks WHERE id = ?1)
 # :actor  :bundle (JSON array, NULL = next available)  :size (1 when
 # NULL). Why claim returned zero rows, most specific first, mirroring
 # CLAIM_SQL's WHERE (C9): a member no longer todo, a member with open
-# children, the hand, then whether any todo row is left at all.
+# children, a bundle no hand could take, the hand full, then whether any
+# todo row is left at all.
 REFUSAL_SQL = """
 SELECT CASE
     WHEN EXISTS (
@@ -103,6 +106,9 @@ SELECT CASE
                 AND child.status IN ('todo', 'doing')
           )
     ) THEN 'gated'
+    WHEN :size > (
+        SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'max_hand'
+    ) THEN 'oversized'
     WHEN (
         SELECT COUNT(*) FROM tasks WHERE owner = :actor AND status = 'doing'
     ) + :size > (
@@ -153,43 +159,36 @@ SELECT (SELECT id FROM gate),
            LIMIT 1
        )
 """
-# HAND_FULL: (held ids, first held id, max_hand)
+# OVERSIZED: (bundle size, max_hand, the first member as typed)
+OVERSIZED_SQL = """
+SELECT CAST(:size AS TEXT),
+       (SELECT value FROM meta WHERE key = 'max_hand'),
+       (SELECT value FROM json_each(:bundle) ORDER BY key LIMIT 1)
+"""
+# HAND_FULL: (held ids, first held id, max_hand) - the CASE guarantees a
+# held row: the bundle fits an empty hand, so this one is not empty
 HAND_FULL_SQL = """
 WITH held AS (
     SELECT id, seq FROM tasks WHERE owner = :actor AND status = 'doing'
 )
-SELECT COALESCE(
-           (
-               SELECT group_concat(id, :sep)
-               FROM (SELECT id FROM held ORDER BY seq)
-           ),
-           ''
-       ),
-       COALESCE((SELECT id FROM held ORDER BY seq LIMIT 1), ''),
+SELECT (SELECT group_concat(id, :sep) FROM (SELECT id FROM held ORDER BY seq)),
+       (SELECT id FROM held ORDER BY seq LIMIT 1),
        (SELECT value FROM meta WHERE key = 'max_hand')
 """
-# WAITING: (todo count, doing rows gating a todo parent, their holders)
+# WAITING: (todo count, doing rows gating a todo parent, their holders) -
+# nothing available while todo rows remain means such a gate exists
 WAITING_SQL = """
 WITH gates AS (
-    SELECT tasks.id, tasks.seq, agents.name FROM tasks
-    LEFT JOIN agents ON agents.id = tasks.owner
+    SELECT tasks.id, tasks.seq, COALESCE(agents.name, tasks.owner) AS name
+    FROM tasks LEFT JOIN agents ON agents.id = tasks.owner
     WHERE tasks.status = 'doing'
       AND tasks.parent_id IN (SELECT id FROM tasks WHERE status = 'todo')
 )
 SELECT CAST((SELECT COUNT(*) FROM tasks WHERE status = 'todo') AS TEXT),
-       COALESCE(
-           (
-               SELECT group_concat(id, :sep)
-               FROM (SELECT id FROM gates ORDER BY seq)
-           ),
-           ''
-       ),
-       COALESCE(
-           (
-               SELECT group_concat(name, :sep)
-               FROM (SELECT DISTINCT name FROM gates ORDER BY name)
-           ),
-           ''
+       (SELECT group_concat(id, :sep) FROM (SELECT id FROM gates ORDER BY seq)),
+       (
+           SELECT group_concat(name, :sep)
+           FROM (SELECT DISTINCT name FROM gates ORDER BY name)
        )
 """
 # EMPTY: nothing to name
@@ -198,6 +197,7 @@ EMPTY_SQL = 'SELECT NULL LIMIT 0'
 NAMES_SQL = MappingProxyType({
     output.Refusal.TAKEN: TAKEN_SQL,
     output.Refusal.GATED: GATED_SQL,
+    output.Refusal.OVERSIZED: OVERSIZED_SQL,
     output.Refusal.HAND_FULL: HAND_FULL_SQL,
     output.Refusal.WAITING: WAITING_SQL,
     output.Refusal.EMPTY: EMPTY_SQL,
@@ -297,10 +297,12 @@ def claim_refusal(
 ) -> tuple[output.Refusal, tuple[str, ...]]:
     """Explain a zero-row claim: one CASE picks the kind, one read names it.
 
-    Kinds: TAKEN (bundle member held/done - holders), GATED (member waits
-    on children - children), HAND_FULL (held ids), WAITING (holders of
-    what remaining todo rows wait on), EMPTY (D6, D22, C9). The names
-    feed output.steer(kind, names) verbatim.
+    Kinds: TAKEN (bundle member held/done - holder), GATED (member waits
+    on children - children), OVERSIZED (bundle larger than the hand -
+    size, hand, first member), HAND_FULL (held ids), WAITING (holders of
+    what remaining todo rows wait on), EMPTY (D6, D22, C9). Both reads
+    share one snapshot, so the names always fit the kind; they feed
+    output.steer(kind, names) verbatim.
     """
     bundle = tuple(dict.fromkeys(task_ids or ()))
     bindings = {
@@ -309,6 +311,10 @@ def claim_refusal(
         'size': len(bundle) or 1,
         'sep': output.LIST_SEP,
     }
-    kind = output.Refusal(conn.execute(REFUSAL_SQL, bindings).fetchone()[0])
-    names = conn.execute(NAMES_SQL[kind], bindings).fetchone()
+    with conn:
+        conn.execute(BEGIN_READ)
+        kind = output.Refusal(
+            conn.execute(REFUSAL_SQL, bindings).fetchone()[0],
+        )
+        names = conn.execute(NAMES_SQL[kind], bindings).fetchone()
     return kind, tuple(names or ())
