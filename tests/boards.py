@@ -131,6 +131,13 @@ def open_children(ctx: Context, task_id: str) -> tuple[str, ...]:
     return tuple(row['id'] for row in rows)
 
 
+def peek_cursor(ctx: Context, actor: str) -> int:
+    """The actor's piggyback cursor, agents.last_event_seen (D10)."""
+    return ctx.conn.execute(
+        'SELECT last_event_seen FROM agents WHERE id = ?', (actor,),
+    ).fetchone()[0]
+
+
 def peek_tree(ctx: Context) -> list[sqlite3.Row]:
     """Every task row in seq order (the property tier's world model)."""
     return ctx.conn.execute('SELECT * FROM tasks ORDER BY seq').fetchall()
