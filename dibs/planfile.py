@@ -1,15 +1,18 @@
 """Pure plan-text functions: text in, records out (C4).
 
 No I/O, no DB, no clock; file reads/writes happen in verbs (C4).
-Level L1 (imports L0). Member budget 6 (ARCHITECTURE §3).
-Recognition and annotation grammar: SSoT §8; nesting: D22.
+Level L1 (imports L0). Member budget 7 - at the cap: an 8th member
+splits along the D4 direction seam, annotate_lines taking LINE_RE and
+LINE_FORMS into the db->md half (ARCHITECTURE §3).
+Recognition and annotation grammar: SSoT §8; nesting: D22; ids: §13.
 """
 
 import hashlib
 import re
 from dataclasses import dataclass, replace
-from itertools import chain, groupby
+from itertools import chain, count, groupby, islice, product
 from operator import attrgetter
+from string import ascii_uppercase
 from textwrap import dedent
 from types import MappingProxyType, SimpleNamespace
 
@@ -44,12 +47,16 @@ BY_SEQ = attrgetter('seq')
 BY_HASH = attrgetter('text_hash')
 BY_HASH_SEQ = attrgetter('text_hash', 'seq')
 DB_WINS = (Status.DOING, Status.DONE)  # §8 sync: '[ ]' over these regresses
-# The top level, shaped like a pairs entry whose task has no id.
-TOP = SimpleNamespace(task=SimpleNamespace(task_id=None))
-
-SeqUpdate = tuple[str, int]  # (task_id, new_seq) - §8 'lines reordered'
-# (task_id, new parent_id or None back at top level) - §8 're-indented'
-ParentUpdate = tuple[str, str | None]
+LETTERS_RE = re.compile('[A-Z]+')  # the section letters an id opens with
+# The top level, shaped like a row whose id a child would dot under.
+TOP = SimpleNamespace(task_id=None)
+# What a line without a pair starts from (§8 'new checkbox line'): todo,
+# unowned; compute_sync fills in the id and every text-cached column.
+FRESH = Task(
+    task_id='', parent_id=None, seq=0, section='', title='', body='',
+    text_hash='', status=Status.TODO, owner=None, claimed_at=None,
+    done_at=None, done_note=None,
+)
 
 # Annotation grammar (SSoT §8) - the ONLY lines the tool may rewrite -
 # keyed by (status, done_note is None). A done row with no note (a
@@ -82,14 +89,13 @@ class PlanItem:
 
 @dataclass(frozen=True)
 class SyncPlan:
-    """Facts compute_sync found; wording them is output's job (C5, §8)."""
+    """Facts compute_sync found; wording them is views' job (C5, §8, D24)."""
 
-    new: tuple[PlanItem, ...]
-    vanished: tuple[str, ...]  # task_ids whose line disappeared
-    checked: tuple[str, ...]  # task_ids hand-marked [x] while todo
-    reordered: tuple[SeqUpdate, ...]
-    reparented: tuple[ParentUpdate, ...]
-    regressed: tuple[str, ...]  # [ ] in file but doing/done in DB
+    rows: tuple[Task, ...]  # every line as the row it should be, in doc order
+    new: tuple[str, ...]  # ids minted this pass; their rows sit in `rows`
+    vanished: tuple[str, ...]  # live rows whose line disappeared -> orphaned
+    checked: tuple[str, ...]  # [x] over todo, new lines too -> done by human
+    regressed: tuple[str, ...]  # [ ] over doing/done: DB wins, warning
 
 
 # The outline root: never a real line; carries the current section.
@@ -155,15 +161,15 @@ def compute_sync(
     plan_items: tuple[PlanItem, ...],
     tasks: tuple[Task, ...],
 ) -> SyncPlan:
-    """Diff plan text against task rows, matched on title_hash (§8).
+    """Diff plan text against task rows, matched on title_hash (§8, D24).
 
-    Duplicate titles match by document order; a retitled line becomes a
-    vanish + new pair (accepted v1 limitation). Orphaned rows never
-    match (they left the plan). Pure and idempotent: applying the result
-    and recomputing must find nothing - with one deferral: an existing
-    task re-indented under a *new* parent has no parent id to report
-    yet, so it shows up in `reparented` on the recompute after the new
-    rows exist (sync applies, then recomputes once).
+    Duplicate titles pair by document order; a retitled line is a vanish
+    plus a new id (accepted v1 limitation); orphaned rows never pair.
+    One pass in document order turns every line into the row it should
+    be: a paired row with its text-cached columns refreshed, or a fresh
+    row whose id mint_id draws from every row known so far - so a child
+    under a brand-new parent gets its dotted id immediately. Pure and
+    idempotent: apply the result and recompute, and every fact is empty.
     """
     queues = {  # text_hash -> live rows in seq order, consumed as paired
         group[0]: iter(tuple(group[1]))
@@ -175,48 +181,98 @@ def compute_sync(
             key=BY_HASH,
         )
     }
-    pairs: dict[int, SimpleNamespace] = {}  # line_no -> (head, task, seq)
-    for seq, plan_item in enumerate(plan_items, start=1):
-        task = next(
-            queues.get(title_hash(plan_item.title), iter(())),
-            None,
-        )
-        if task is not None:
-            pairs[plan_item.line_no] = SimpleNamespace(
-                head=plan_item, task=task, seq=seq,
+    bases = {  # line_no -> the row a line starts from: its pair, or FRESH
+        head.line_no: replace(task, section=head.section)
+        for head in plan_items
+        for task in islice(queues.get(title_hash(head.title), iter(())), 1)
+    }
+    known = {  # every row that exists, pairs already in their new section
+        row.task_id: row for row in chain(tasks, bases.values())
+    }
+    lines: dict[int, Task] = {}  # line_no -> the row it should be
+    for plan_item in plan_items:
+        if plan_item.line_no not in bases:
+            bases[plan_item.line_no] = replace(
+                FRESH,
+                task_id=mint_id(
+                    plan_item,
+                    lines.get(plan_item.parent_line, TOP).task_id,
+                    (*known.values(), *lines.values()),
+                ),
             )
+        lines[plan_item.line_no] = replace(
+            bases[plan_item.line_no],
+            parent_id=lines.get(plan_item.parent_line, TOP).task_id,
+            seq=len(lines) + 1,
+            section=plan_item.section,
+            title=plan_item.title,
+            body=plan_item.body,
+            text_hash=title_hash(plan_item.title),
+        )
     return SyncPlan(
-        new=tuple(head for head in plan_items if head.line_no not in pairs),
+        rows=tuple(lines.values()),
+        new=tuple(
+            row.task_id for row in lines.values() if row.task_id not in known
+        ),
         vanished=tuple(
             row.task_id
             for row in sorted(chain.from_iterable(queues.values()), key=BY_SEQ)
         ),
         checked=tuple(
-            pair.task.task_id
-            for pair in pairs.values()
-            if pair.head.checkbox == CHECKED and pair.task.status == Status.TODO
-        ),
-        reordered=tuple(
-            (pair.task.task_id, pair.seq)
-            for pair in pairs.values()
-            if pair.task.seq != pair.seq
-        ),
-        reparented=tuple(
-            (
-                pair.task.task_id,
-                pairs.get(pair.head.parent_line, TOP).task.task_id,
+            lines[head.line_no].task_id
+            for head in plan_items
+            if (
+                head.checkbox == CHECKED
+                and bases[head.line_no].status == Status.TODO
             )
-            for pair in pairs.values()
-            if (pair.head.parent_line is None or pair.head.parent_line in pairs)
-            and pairs.get(pair.head.parent_line, TOP).task.task_id
-            != pair.task.parent_id
         ),
         regressed=tuple(
-            pair.task.task_id
-            for pair in pairs.values()
-            if not pair.head.checkbox and pair.task.status in DB_WINS
+            lines[head.line_no].task_id
+            for head in plan_items
+            if not head.checkbox and bases[head.line_no].status in DB_WINS
         ),
     )
+
+
+def mint_id(
+    head: PlanItem,
+    parent_id: str | None,
+    taken: tuple[Task, ...],
+) -> str:
+    """Mint the next free id for head over every row that exists (I5).
+
+    Under a parent the id dots: parent_id.N. At the top level it is the
+    section's letter - the one any top-level row of head's section
+    carries, else the first unused (A..Z, AA..) - plus N. N is the max
+    ordinal under that prefix + 1 over ALL rows, orphaned included, so
+    an id is never reused (SSoT §8, §13).
+    """
+    prefix = f'{parent_id}.'
+    if parent_id is None:
+        used = {LETTERS_RE.match(row.task_id)[0] for row in taken}
+        prefix = next(chain(
+            (
+                LETTERS_RE.match(row.task_id)[0]
+                for row in taken
+                if row.parent_id is None and row.section == head.section
+            ),
+            (
+                letters
+                for letters in map(''.join, chain.from_iterable(
+                    product(ascii_uppercase, repeat=size) for size in count(1)
+                ))
+                if letters not in used
+            ),
+        ))
+    ordinal = max(
+        (
+            int(row.task_id.removeprefix(prefix))
+            for row in taken
+            if row.task_id.removeprefix(prefix).isdigit()
+        ),
+        default=0,
+    ) + 1
+    return f'{prefix}{ordinal}'
 
 
 def annotate_lines(text: str, tasks: tuple[Task, ...]) -> str:

@@ -4,9 +4,9 @@ Success is judged by rowcount alone (I1, C3) and appends exactly one
 event per changed row in the same transaction (I6). Branching lives in
 the WHERE clause; Python stays linear (C9). Level L2 (imports L0-L1).
 
-Member budget 7 - AT THE CAP by design (ARCHITECTURE §3): the first
-new write transition splits this module in two (e.g. transitions_work /
-transitions_plan); never raise the limit.
+Member budget 6 (ARCHITECTURE §3). import_author_done is a seventh, at
+the WPS cap, only until §13 step 7 moves its case into
+plansync.apply_sync; never raise the limit.
 
 Rows come back as sqlite3.Row (store.connect); `RETURNING *` and
 `SELECT *` follow the DDL column order, which mirrors records.Task and
@@ -145,19 +145,18 @@ VALUES (
 )
 """
 
-# ?1 agent_id  ?2 name - register_agent has no `now` (ARCHITECTURE §5),
-# so the join stamps the SQLite clock; the cursor starts after the join
-# itself so a newcomer is not handed the whole history (D10, D16)
+# ?1 agent_id  ?2 name  ?3 now - the one clock stamps the join and the
+# agent row (I6, C3); the cursor starts after the join itself so a
+# newcomer is not handed the whole history (D10, D16)
 JOIN_EVENT_SQL = """
 INSERT INTO events (ts, agent, kind, task_id, to_agent, text)
-VALUES (CAST(strftime('%s', 'now') AS INTEGER), ?1, 'join', NULL, NULL, ?2)
+VALUES (?3, ?1, 'join', NULL, NULL, ?2)
 """
 AGENT_SQL = """
 INSERT INTO agents
     (id, name, created_at, last_seen, last_event_seen, last_section)
 VALUES (
-    ?1, ?2, CAST(strftime('%s', 'now') AS INTEGER), NULL,
-    (SELECT COALESCE(MAX(id), 0) FROM events), NULL
+    ?1, ?2, ?3, ?3, (SELECT COALESCE(MAX(id), 0) FROM events), NULL
 )
 """
 
@@ -204,7 +203,8 @@ def finish(
 ) -> Task | None:
     """Complete an owned task: WHERE owner=:actor, note mandatory (I2, D11).
 
-    None on zero rows (not the owner, or not doing): the verb steers.
+    None <=> zero rows (not the owner, or not doing); the verb raises
+    output.steer(Refusal.NOT_OWNER, ...), never this function (C7).
     """
     with conn:
         conn.execute(BEGIN)
@@ -227,7 +227,8 @@ def release(
 ) -> Task | None:
     """Drop an owned task back to todo, logging why (SSoT §6, D9, I2).
 
-    None on zero rows (not the owner, or not doing): the verb steers.
+    None <=> zero rows (not the owner, or not doing); the verb raises
+    output.steer(Refusal.NOT_OWNER, ...), never this function (C7).
     """
     with conn:
         conn.execute(BEGIN)
@@ -309,17 +310,18 @@ def import_author_done(
     return replace(task, status=Status(task.status))
 
 
-def register_agent(conn: sqlite3.Connection, agent: Agent) -> bool:
+def register_agent(conn: sqlite3.Connection, agent: Agent, now: int) -> bool:
     """INSERT the identity; False on UNIQUE collision, never pre-check (I1).
 
-    The join event rides the same transaction and is rolled back with a
+    The join event, stamped `now` like every write (one clock per
+    invocation), rides the same transaction and is rolled back with a
     refused INSERT (I6).
     """
     try:
         with conn:
             conn.execute(BEGIN)
-            conn.execute(JOIN_EVENT_SQL, (agent.agent_id, agent.name))
-            conn.execute(AGENT_SQL, (agent.agent_id, agent.name))
+            conn.execute(JOIN_EVENT_SQL, (agent.agent_id, agent.name, now))
+            conn.execute(AGENT_SQL, (agent.agent_id, agent.name, now))
     except sqlite3.IntegrityError:
         return False
     return True

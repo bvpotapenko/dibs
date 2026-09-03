@@ -117,7 +117,7 @@ def test_claim_prefers_last_section_then_seq(tmp_path, make_board, two_agents):
         '## Docs\n- [ ] D one\n- [ ] D two\n'
     ))
     otter = two_agents[0].agent_id
-    assert transitions.register_agent(ctx.conn, two_agents[0])
+    assert transitions.register_agent(ctx.conn, two_agents[0], NOW)
     first = transitions.claim(ctx.conn, otter, NOW, ('B1',))
     assert ids(first) == ['B1']
     transitions.finish(ctx.conn, otter, NOW, 'B1', 'done')
@@ -198,7 +198,9 @@ def test_claim_zero_rows_three_diagnoses(board, two_agents):
 
 
 def test_finish_rejects_non_owner(board, two_agents):
-    """I2: WHERE owner=:actor - the other agent's finish is rowcount 0."""
+    """I2: WHERE owner=:actor - the other agent's finish is rowcount 0
+    and writes no event; the only done event stays the fixture's
+    hand-checked import of A3 by 'human'."""
     otter, elephant = two_agents
     transitions.claim(board.conn, otter.agent_id, NOW, ('A1',))
     rejected = transitions.finish(
@@ -208,7 +210,11 @@ def test_finish_rejects_non_owner(board, two_agents):
     row = peek_task(board, 'A1')
     assert row['status'] == Status.DOING.value
     assert row['owner'] == otter.agent_id
-    assert not peek_events(board, EventKind.DONE.value)
+    done_events = [
+        (row['agent'], row['task_id'])
+        for row in peek_events(board, EventKind.DONE.value)
+    ]
+    assert done_events == [('human', 'A3')]
 
 
 def test_finish_writes_one_event(board, two_agents):
@@ -224,7 +230,10 @@ def test_finish_writes_one_event(board, two_agents):
         (row['agent'], row['task_id'], row['text'])
         for row in peek_events(board, EventKind.DONE.value)
     ]
-    assert events == [(otter.agent_id, 'A1', 'two files')]
+    assert events == [
+        ('human', 'A3', ''),  # the fixture's hand-checked import
+        (otter.agent_id, 'A1', 'two files'),
+    ]
     again = transitions.finish(board.conn, otter.agent_id, LATER, 'A1', 'x')
     assert again is None  # done is terminal: no second event
 
@@ -304,7 +313,8 @@ def test_record_note_broadcast_and_directed(board, two_agents):
 
 
 def test_import_author_done_owner_human(board):
-    """SSoT §8: a hand-checked [x] imports as done with owner 'human'."""
+    """SSoT §8: a hand-checked [x] imports as done with owner 'human'
+    (the fixture's own [x], A3, came through this path at build time)."""
     task = transitions.import_author_done(board.conn, NOW, 'A1')
     assert (task.status, task.owner) == (Status.DONE, 'human')
     assert (task.done_at, task.done_note) == (NOW, None)
@@ -312,25 +322,30 @@ def test_import_author_done_owner_human(board):
         (row['agent'], row['task_id'])
         for row in peek_events(board, EventKind.DONE.value)
     ]
-    assert events == [('human', 'A1')]
+    assert events == [('human', 'A3'), ('human', 'A1')]
     assert transitions.import_author_done(board.conn, NOW, 'A1') is None
     assert transitions.import_author_done(board.conn, NOW, 'A3') is None
 
 
 def test_register_agent_false_on_collision(board):
     """I1: second INSERT of the same name returns False via UNIQUE -
-    no SELECT-then-INSERT anywhere."""
+    no SELECT-then-INSERT anywhere. The join event and the agent row
+    are stamped with the caller's `now`, never the SQLite clock (I6)."""
     otter = Agent(agent_id='brave-otter-1111', name='brave-otter')
-    assert transitions.register_agent(board.conn, otter) is True
+    assert transitions.register_agent(board.conn, otter, NOW) is True
     same_name = Agent(agent_id='brave-otter-9999', name='brave-otter')
-    assert transitions.register_agent(board.conn, same_name) is False
+    assert transitions.register_agent(board.conn, same_name, LATER) is False
     same_id = Agent(agent_id='brave-otter-1111', name='other-otter')
-    assert transitions.register_agent(board.conn, same_id) is False
+    assert transitions.register_agent(board.conn, same_id, LATER) is False
     joins = peek_events(board, EventKind.JOIN.value)
-    assert [(row['agent'], row['text']) for row in joins] == [
-        (otter.agent_id, otter.name),
+    joined = [
+        (row['agent'], row['text'], row['ts']) for row in joins
     ]
-    cursor = board.conn.execute(
-        'SELECT last_event_seen FROM agents WHERE id = ?', (otter.agent_id,),
+    assert joined == [(otter.agent_id, otter.name, NOW)]
+    agent_row = board.conn.execute(
+        'SELECT created_at, last_seen, last_event_seen FROM agents'
+        ' WHERE id = ?',
+        (otter.agent_id,),
     ).fetchone()
-    assert cursor[0] == joins[0]['id']  # a newcomer starts after its join
+    # A newcomer's cursor starts after its own join (D10, D16).
+    assert tuple(agent_row) == (NOW, NOW, joins[0]['id'])

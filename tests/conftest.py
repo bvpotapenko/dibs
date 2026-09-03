@@ -19,7 +19,7 @@ sqlite3 ':memory:'.
 import pytest
 
 from dibs import transitions
-from tests.boards import ELEPHANT, OTTER, build_board
+from tests.boards import ELEPHANT, NOW, OTTER, build_board
 
 # Exercises every SSoT §8 recognition rule: two sections, bodies,
 # nested children (one bodiless - a verify-warning case), a hand [x],
@@ -64,7 +64,9 @@ def board(tmp_path, plan_text):
 
     Build: write plan.md from plan_text; store.connect on
     tmp_path/'.plan.md.dibs' + ensure_schema; seed tasks from
-    planfile.parse_plan; return Context(conn, plan, db, None, NOW).
+    planfile.compute_sync(parse_plan(text), ()).rows and import the
+    hand-checked ones (tests/boards.build_board); return
+    Context(conn, plan, db, None, NOW).
     """
     ctx = build_board(tmp_path, plan_text)
     yield ctx
@@ -80,7 +82,7 @@ def two_agents(board):
     setup too).
     """
     for agent in (OTTER, ELEPHANT):
-        assert transitions.register_agent(board.conn, agent)
+        assert transitions.register_agent(board.conn, agent, NOW)
     return (OTTER, ELEPHANT)
 
 

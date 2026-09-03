@@ -8,13 +8,20 @@ import dataclasses
 import re
 from types import MappingProxyType
 
-from dibs.planfile import annotate_lines, compute_sync, parse_plan, title_hash
+from dibs.planfile import (
+    PlanItem,
+    annotate_lines,
+    compute_sync,
+    mint_id,
+    parse_plan,
+    title_hash,
+)
 from dibs.records import Status
-from tests.boards import ELEPHANT, OTTER, task_rows
+from tests.boards import ELEPHANT, NOW, OTTER, init_rows
 
-EMPTY_SYNC = MappingProxyType({
-    'new': (), 'vanished': (), 'checked': (),
-    'reordered': (), 'reparented': (), 'regressed': (),
+# The facts a SyncPlan reports besides rows (rows are never empty).
+EMPTY_FACTS = MappingProxyType({
+    'new': (), 'vanished': (), 'checked': (), 'regressed': (),
 })
 TITLES = (
     'Fix off-by-one in the tokenizer',
@@ -42,6 +49,8 @@ MULTI = 12
 EMPTY = 14
 RENAME = 15
 README = 24
+# Ids init mints for plan_text, in document order (SSoT §8, §13).
+IDS = ('A1', 'A2', 'A2.1', 'A2.2', 'A3', 'B1')
 
 
 def doing(task, agent=OTTER):
@@ -59,12 +68,25 @@ def done(task, note, agent=ELEPHANT):
 
 
 def only(plan, **expected):
-    """Assert a SyncPlan carries exactly the expected non-empty facts."""
+    """Assert a SyncPlan reports exactly the expected non-empty facts."""
     found = {
         field.name: getattr(plan, field.name)
         for field in dataclasses.fields(plan)
+        if field.name != 'rows'
     }
-    assert found == {**EMPTY_SYNC, **expected}
+    assert found == {**EMPTY_FACTS, **expected}
+
+
+def ordered(plan):
+    """Ids in document order, once seq is seen to count 1..n along it."""
+    seqs = [row.seq for row in plan.rows]
+    assert seqs == list(range(1, len(seqs) + 1))
+    return [row.task_id for row in plan.rows]
+
+
+def parents(plan):
+    """task_id -> parent_id of every row."""
+    return {row.task_id: row.parent_id for row in plan.rows}
 
 
 def test_parse_recognizes_three_checkbox_forms(plan_text):
@@ -134,6 +156,7 @@ def test_parse_sections_letter_in_order(plan_text):
     # heading '# Demo corrections' holds no task and takes no letter.
     ordered = tuple(dict.fromkeys(head.section for head in found))
     assert ordered == ('Parser', 'Docs')
+    assert tuple(row.task_id for row in init_rows(plan_text)) == IDS
 
 
 def test_parse_no_headings_single_section():
@@ -173,9 +196,8 @@ def test_parse_rejects_checkbox_lookalikes():
     human's prose: never a task, never rewritten (D5, I4).
     """
     for text in NON_GRAMMAR:
-        found = parse_plan(text)
-        assert found == (), text
-        assert annotate_lines(text, task_rows(found)) == text, text
+        assert parse_plan(text) == (), text
+        assert annotate_lines(text, init_rows(text)) == text, text
     upper = parse_plan('- [X] Rename Lexer to Tokenizer\n')
     assert (upper[0].checkbox, upper[0].title) == (
         'x', 'Rename Lexer to Tokenizer',
@@ -184,7 +206,7 @@ def test_parse_rejects_checkbox_lookalikes():
 
 def test_annotate_rewrites_only_grammar_lines(plan_text):
     """I4: every byte outside annotation-grammar lines is preserved."""
-    rows = list(task_rows(parse_plan(plan_text)))
+    rows = list(init_rows(plan_text))
     rows[0] = doing(rows[0])  # A1 claimed by otter
     rows[2] = done(rows[2], 'handled')  # A2.1 done by elephant
     before = plan_text.split('\n')
@@ -213,7 +235,7 @@ def test_annotate_todo_doing_done_forms():
     by sync) renders as the bare '- [x] t' - the tool adds nothing.
     """
     text = '- [ ] a\n  - [ ] b\n- [ ] c\n- [x] d\n'
-    rows = list(task_rows(parse_plan(text)))
+    rows = list(init_rows(text))
     rows[1] = doing(rows[1])
     rows[2] = done(rows[2], 'moved it')
     assert annotate_lines(text, tuple(rows)) == (
@@ -231,7 +253,7 @@ def test_annotate_collapses_multiline_notes():
     verbatim; only the plan line is single-line (D4).
     """
     text = '- [ ] a\n- [ ] b\n'
-    rows = list(task_rows(parse_plan(text)))
+    rows = list(init_rows(text))
     rows[0] = done(rows[0], 'first\nsecond\r\n   third\t')
     once = annotate_lines(text, tuple(rows))
     assert once == (
@@ -244,7 +266,7 @@ def test_annotate_collapses_multiline_notes():
 
 def test_annotate_is_idempotent(plan_text):
     """I4: annotating an already-annotated text changes nothing."""
-    rows = list(task_rows(parse_plan(plan_text)))
+    rows = list(init_rows(plan_text))
     rows[0] = doing(rows[0])
     rows[2] = done(rows[2], 'handled: two files')
     once = annotate_lines(plan_text, tuple(rows))
@@ -275,73 +297,85 @@ def test_hash_excludes_done_annotation():
     authored = '- [ ] verify ✓ marks render\n'
     kept = parse_plan(authored)
     assert kept[0].title == 'verify ✓ marks render'
-    assert annotate_lines(authored, task_rows(kept)) == authored
+    assert annotate_lines(authored, init_rows(authored)) == authored
 
 
 def test_sync_new_line_becomes_task(plan_text):
-    """§8 sync: a new checkbox line lands in SyncPlan.new."""
-    rows = task_rows(parse_plan(plan_text))
+    """§8 sync: a new checkbox line becomes a fresh todo row with the
+    next id in its section, at its document seq; its id lands in new."""
     grown = f'{plan_text}- [ ] Write the changelog\n'
-    plan = compute_sync(parse_plan(grown), rows)
-    assert [head.title for head in plan.new] == ['Write the changelog']
-    assert plan.new[0].section == 'Docs'
-    only(plan, new=plan.new)
+    plan = compute_sync(parse_plan(grown), init_rows(plan_text))
+    only(plan, new=('B2',))
+    fresh = plan.rows[-1]
+    assert (fresh.task_id, fresh.title, fresh.section, fresh.seq) == (
+        'B2', 'Write the changelog', 'Docs', 7,
+    )
+    assert (fresh.status, fresh.owner, fresh.parent_id) == (
+        Status.TODO, None, None,
+    )
+    assert fresh.text_hash == title_hash('Write the changelog')
 
 
 def test_sync_vanished_line_orphaned(plan_text):
-    """§8 sync + I5: a removed line is orphaned, never deleted."""
-    rows = task_rows(parse_plan(plan_text))
+    """§8 sync + I5: a removed line is orphaned, never deleted; later
+    rows shift up one seq slot with their ids untouched."""
     lines = plan_text.split('\n')
     lines.pop(EMPTY - 1)  # 'Cover the empty file' (A2.2) leaves the plan
-    plan = compute_sync(parse_plan('\n'.join(lines)), rows)
-    assert plan.vanished == ('A2.2',)
-    assert plan.new == ()
-    # Later lines shift up one seq slot; IDs are untouched (I5).
-    assert plan.reordered == (('A3', 4), ('B1', 5))
+    plan = compute_sync(parse_plan('\n'.join(lines)), init_rows(plan_text))
+    only(plan, vanished=('A2.2',))
+    assert ordered(plan) == ['A1', 'A2', 'A2.1', 'A3', 'B1']
 
 
 def test_sync_hand_checked_imports_done(plan_text):
-    """§8 sync: [x] over todo lands in SyncPlan.checked (owner human)."""
-    rows = task_rows(parse_plan(plan_text))
+    """§8 sync: [x] over todo lands in SyncPlan.checked (owner human);
+    the row itself passes its state through - the import is apply_sync's
+    own write (D4, D24)."""
     edited = plan_text.replace('- [ ] Fix off-by-one', '- [x] Fix off-by-one')
-    plan = compute_sync(parse_plan(edited), rows)
+    plan = compute_sync(parse_plan(edited), init_rows(plan_text))
     only(plan, checked=('A1',))  # A3 is already done: not re-imported
+    assert plan.rows[0].status == Status.TODO
 
 
 def test_sync_reorder_updates_seq_only(plan_text):
-    """§8 sync + I5/D7: reordering changes seq; IDs stay untouched."""
-    rows = task_rows(parse_plan(plan_text))
+    """§8 sync + I5/D7: reordering refreshes seq in rows; ids stay
+    untouched and no other fact is reported."""
     lines = plan_text.split('\n')
     block = lines[FIX - 1:SHIP - 1]  # the task line plus its two body lines
     before = lines[:FIX - 1]
     rest = before + lines[SHIP - 1:]
     at = RENAME - 1 - len(block)  # right after 'Rename Lexer to Tokenizer'
     moved = rest[:at] + block + rest[at:]
-    plan = compute_sync(parse_plan('\n'.join(moved)), rows)
-    only(plan, reordered=(
-        ('A2', 1), ('A2.1', 2), ('A2.2', 3), ('A1', 4),
-    ))
+    plan = compute_sync(parse_plan('\n'.join(moved)), init_rows(plan_text))
+    only(plan)
+    assert ordered(plan) == ['A2', 'A2.1', 'A2.2', 'A1', 'A3', 'B1']
 
 
 def test_sync_reindent_updates_parent(plan_text):
-    """§8 sync + D22: re-indenting under another checkbox moves
-    parent_id (and back to None at top level); ID untouched."""
-    rows = task_rows(parse_plan(plan_text))
+    """§8 sync + D22: re-indenting under another checkbox refreshes
+    parent_id in rows (and back to None at top level); ids untouched."""
     lines = plan_text.split('\n')
     nested = list(lines)
-    rename_line = nested[RENAME - 1]
+    rename_line = lines[RENAME - 1]
     nested[RENAME - 1] = f'  {rename_line}'  # Rename under Ship
-    plan = compute_sync(parse_plan('\n'.join(nested)), rows)
-    only(plan, reparented=(('A3', 'A2'),))
+    plan = compute_sync(parse_plan('\n'.join(nested)), init_rows(plan_text))
+    only(plan)
+    assert parents(plan) == {
+        'A1': None, 'A2': None, 'A2.1': 'A2', 'A2.2': 'A2', 'A3': 'A2',
+        'B1': None,
+    }
     lifted = list(lines)
     lifted[EMPTY - 1] = lifted[EMPTY - 1].lstrip()  # A2.2 to top level
-    plan = compute_sync(parse_plan('\n'.join(lifted)), rows)
-    only(plan, reparented=(('A2.2', None),))
+    plan = compute_sync(parse_plan('\n'.join(lifted)), init_rows(plan_text))
+    only(plan)
+    assert parents(plan) == {
+        'A1': None, 'A2': None, 'A2.1': 'A2', 'A2.2': None, 'A3': None,
+        'B1': None,
+    }
 
 
 def test_sync_regressed_checkbox_flagged(plan_text):
     """§8 sync: [ ] over doing/done lands in regressed; DB wins."""
-    rows = list(task_rows(parse_plan(plan_text)))
+    rows = list(init_rows(plan_text))
     rows[0] = doing(rows[0])
     rows[2] = done(rows[2], 'handled')
     plan = compute_sync(parse_plan(plan_text), tuple(rows))
@@ -349,22 +383,20 @@ def test_sync_regressed_checkbox_flagged(plan_text):
 
 
 def test_sync_retitle_is_vanish_plus_new(plan_text):
-    """§8 sync: an edited title orphans the old task and adds a new
-    one; both flagged (accepted v1 limitation)."""
-    rows = task_rows(parse_plan(plan_text))
+    """§8 sync: an edited title orphans the old task and mints a new
+    one, both flagged (accepted v1 limitation); the new row takes the
+    old slot and the section's next ordinal, never the orphan's (I5)."""
     edited = plan_text.replace('Fix off-by-one', 'Fix off-by-two')
-    plan = compute_sync(parse_plan(edited), rows)
-    assert plan.vanished == ('A1',)
-    assert [head.title for head in plan.new] == [
-        'Fix off-by-two in the tokenizer',
-    ]
-    assert plan.reordered == ()  # the new line took the old slot
+    plan = compute_sync(parse_plan(edited), init_rows(plan_text))
+    only(plan, new=('A4',), vanished=('A1',))
+    assert ordered(plan) == ['A4', 'A2', 'A2.1', 'A2.2', 'A3', 'B1']
+    assert plan.rows[0].title == 'Fix off-by-two in the tokenizer'
 
 
 def test_sync_duplicate_titles_match_in_order():
     """§8 sync: identical titles pair up by document order."""
     text = '- [ ] same\n- [ ] same\n- [ ] same\n'
-    rows = task_rows(parse_plan(text))
+    rows = init_rows(text)
     assert [row.task_id for row in rows] == ['A1', 'A2', 'A3']
     ticked = parse_plan('- [ ] same\n- [x] same\n- [ ] same\n')
     only(compute_sync(ticked, rows), checked=('A2',))
@@ -373,11 +405,52 @@ def test_sync_duplicate_titles_match_in_order():
 
 
 def test_mint_id_letters_ordinals_and_children():
-    """§8/I5 (§13 step 5): letters by first appearance; ordinal = max
-    under the prefix + 1 over ALL rows, orphaned included; a child of A3
-    is A3.N; a child of a row minted in the same pass gets its dotted id
-    immediately; the 27th section letters AA."""
-    raise NotImplementedError('needs planfile.mint_id (§13 step 5)')
+    """§8/I5 (§13 step 5): letters by first appearance, the next unused
+    one for a new section; ordinal = max under the prefix + 1 over ALL
+    rows, orphaned included; children dot under their parent and count
+    over that prefix only."""
+    rows = init_rows('## Parser\n- [ ] one\n- [ ] two\n## Docs\n- [ ] three\n')
+    assert [row.task_id for row in rows] == ['A1', 'A2', 'B1']
+    head = PlanItem(
+        line_no=9, parent_line=None, checkbox='', title='x', body='',
+        section='Parser',
+    )
+    docs = dataclasses.replace(head, section='Docs')
+    tests = dataclasses.replace(head, section='Tests')
+    minted = [mint_id(top, None, rows) for top in (head, docs, tests)]
+    assert minted == ['A3', 'B2', 'C1']
+    # An orphaned A2 keeps its ordinal: the next Parser task is A3, not A2.
+    orphaned = (
+        rows[0],
+        dataclasses.replace(rows[1], status=Status.ORPHANED),
+        rows[2],
+    )
+    assert mint_id(head, None, orphaned) == 'A3'
+    # Children dot under the parent and count over that prefix only.
+    kid = dataclasses.replace(rows[1], task_id='A2.1', parent_id='A2')
+    assert (
+        mint_id(head, 'A2', rows),
+        mint_id(head, 'A2', (*rows, kid)),
+        mint_id(head, 'A2.1', (*rows, kid)),
+    ) == ('A2.1', 'A2.2', 'A2.1.1')
+    assert mint_id(head, None, (*rows, kid)) == 'A3'  # A2.1 is no A ordinal
+
+
+def test_mint_id_same_pass_and_past_z():
+    """§8/§13 (§13 step 5): a child under a parent minted in the same pass
+    gets its dotted id immediately (D24: no deferral); the 27th section
+    letters AA like a spreadsheet column."""
+    rows = init_rows('## Parser\n- [ ] one\n## Docs\n- [ ] two\n')
+    grown = compute_sync(parse_plan(
+        '## Parser\n- [ ] one\n- [ ] four\n  - [ ] kid\n## Docs\n- [ ] two\n',
+    ), rows)
+    assert grown.new == ('A2', 'A2.1')
+    assert parents(grown)['A2.1'] == 'A2'
+    many = ''.join(
+        f'## S{number}\n- [ ] t{number}\n' for number in range(27)
+    )
+    letters = [row.task_id for row in init_rows(many)]
+    assert letters[25:] == ['Z1', 'AA1']
 
 
 def test_sync_rows_refresh_text_keep_state(plan_text):
@@ -385,4 +458,41 @@ def test_sync_rows_refresh_text_keep_state(plan_text):
     rows carry refreshed seq/section/parent_id/title/body and untouched
     status/owner/claimed_at/done_*; new rows are todo with minted ids;
     `new` lists their ids; a new [x] line appears in `checked`."""
-    raise NotImplementedError('needs SyncPlan.rows (§13 step 5)')
+    rows = list(init_rows(plan_text))
+    rows[0] = doing(rows[0])  # A1 is held; its line still says [ ]
+    edited = (
+        plan_text
+        .replace('## Parser', '## Lexer')  # heading renamed
+        .replace('token count is 12', 'token count is 13')  # body reworded
+        .replace('- [ ] Fix off-by-one', '- [ ] Fix  off-by-one')  # same hash
+        .replace('- [x] Rename Lexer', '  - [x] Rename Lexer')  # under Ship
+    )
+    edited = f'{edited}- [x] Write the changelog\n'  # new, hand-checked
+    plan = compute_sync(parse_plan(edited), tuple(rows))
+    assert ordered(plan) == ['A1', 'A2', 'A2.1', 'A2.2', 'A3', 'B1', 'B2']
+    assert [row.section for row in plan.rows] == [
+        'Lexer', 'Lexer', 'Lexer', 'Lexer', 'Lexer', 'Docs', 'Docs',
+    ]
+    held = plan.rows[0]
+    assert (
+        held.title,
+        held.body.split('\n')[0],
+        held.status,
+        held.owner,
+        held.claimed_at,
+    ) == (
+        'Fix  off-by-one in the tokenizer',
+        'Repro: token count is 13 for fixtures/one.txt, expected 11.',
+        Status.DOING,
+        OTTER.agent_id,
+        1,
+    )
+    renamed = plan.rows[4]
+    assert (
+        renamed.parent_id, renamed.status, renamed.owner, renamed.done_at,
+    ) == ('A2', Status.DONE, 'human', NOW)
+    fresh = plan.rows[-1]
+    assert (fresh.task_id, fresh.status, fresh.owner) == (
+        'B2', Status.TODO, None,
+    )
+    only(plan, new=('B2',), checked=('B2',), regressed=('A1',))

@@ -42,7 +42,7 @@ def test_gating_invariant_random_trees(tmp_path):
         rng = random.Random(seed)
         ctx = build_board(tmp_path / f'gate{seed}', random_tree(seed))
         with closing(ctx.conn) as conn:
-            assert transitions.register_agent(conn, OTTER)
+            assert transitions.register_agent(conn, OTTER, NOW)
             pending = [row['id'] for row in peek_tree(ctx)]
             while pending:
                 task_id = rng.choice(pending)
@@ -83,7 +83,7 @@ def test_claim_order_affinity_then_seq(tmp_path):
     for seed in SEEDS:
         ctx = build_board(tmp_path / f'order{seed}', random_tree(seed))
         with closing(ctx.conn) as conn:
-            assert transitions.register_agent(conn, OTTER)
+            assert transitions.register_agent(conn, OTTER, NOW)
             last_section = None
             while expected_next(peek_tree(ctx), last_section) is not None:
                 want = expected_next(peek_tree(ctx), last_section)

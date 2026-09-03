@@ -9,13 +9,10 @@ pyproject dev extras first.
 import dataclasses
 import random
 import re
-from operator import attrgetter
-from string import ascii_uppercase
-from types import MappingProxyType
 
-from dibs.planfile import annotate_lines, compute_sync, parse_plan, title_hash
+from dibs.planfile import annotate_lines, compute_sync, parse_plan
 from dibs.records import Status, Task
-from tests.boards import ELEPHANT, NOW, OTTER, task_rows
+from tests.boards import ELEPHANT, NOW, OTTER, init_rows, settle
 
 SEEDS = range(100)
 # The §8 annotation grammar exactly as dibs/planfile.LINE_RE reads it:
@@ -46,10 +43,7 @@ LINE_WEIGHTS = (9, 5, 6)
 DONE_NOTE = 'note ✓ with: punctuation\nand a second line\r\n\tthird'
 ROW_KINDS = ('doing', 'done', 'orphaned', 'todo')
 ROW_WEIGHTS = (5, 5, 2, 8)
-ALL_EMPTY = MappingProxyType({
-    'new': (), 'vanished': (), 'checked': (),
-    'reordered': (), 'reparented': (), 'regressed': (),
-})
+NO_FACTS = ((), (), (), ())  # new, vanished, checked, regressed: nothing
 
 
 def generate_document(seed: int) -> str:
@@ -149,91 +143,9 @@ def mutate_document(text: str, seed: int) -> str:
     return '\n'.join(lines)
 
 
-def pair(plan_items, rows: tuple[Task, ...]) -> dict[int, Task]:
-    """Test-side mirror of the §8 pairing (hash-matched, dupes by order)."""
-    queues: dict[str, list[Task]] = {}
-    for row in sorted(rows, key=attrgetter('seq')):
-        if row.status != Status.ORPHANED:
-            queues.setdefault(row.text_hash, []).append(row)
-    matched = {}
-    for head in plan_items:
-        bucket = queues.get(title_hash(head.title))
-        if bucket:
-            matched[head.line_no] = bucket.pop(0)
-    return matched
-
-
-def mint_id(section: str, parent_id: str | None, rows) -> str:
-    """Next free id in its section / under its parent (SSoT §8, I5).
-
-    Max ordinal plus one, never a count: IDs are never reused, and a
-    reparented task keeps its old id while leaving its old sibling set.
-    """
-    prefix = f'{parent_id}.'
-    if parent_id is None:
-        letters = {row.task_id[0] for row in rows}
-        prefix = next(
-            (row.task_id[0] for row in rows if row.section == section),
-            ascii_uppercase[len(letters)],
-        )
-    taken = [
-        int(row.task_id[len(prefix):])
-        for row in rows
-        if row.task_id.startswith(prefix)
-        and row.task_id[len(prefix):].isdigit()
-    ]
-    ordinal = max(taken, default=0) + 1
-    return f'{prefix}{ordinal}'
-
-
-def deferred_by_new_parent(plan, plan_items, rows, inserted) -> bool:
-    """Is every surviving reparent the ONE deferral compute_sync documents?
-
-    True when each reparented task's line hangs under a line the first
-    pass reported as new: that parent existed only as a fresh insertion,
-    so it had no task id to report yet (§8, compute_sync docstring).
-    """
-    heads = {head.line_no: head for head in plan_items}
-    parents = {
-        row.task_id: heads[line_no].parent_line
-        for line_no, row in pair(plan_items, rows).items()
-    }
-    fresh = {head.line_no for head in inserted}
-    return all(parents[moved] in fresh for moved in dict(plan.reparented))
-
-
-def apply_sync(plan, plan_items, rows: tuple[Task, ...]) -> tuple[Task, ...]:
-    """What sync (§13 step 8) will do with a SyncPlan, minus the DB."""
-    by_id = {row.task_id: row for row in rows}
-    for gone in plan.vanished:
-        by_id[gone] = dataclasses.replace(by_id[gone], status=Status.ORPHANED)
-    for ticked in plan.checked:
-        by_id[ticked] = dataclasses.replace(
-            by_id[ticked], status=Status.DONE, owner='human', done_at=NOW,
-        )
-    for shifted, seq in plan.reordered:
-        by_id[shifted] = dataclasses.replace(by_id[shifted], seq=seq)
-    for child, parent in plan.reparented:
-        by_id[child] = dataclasses.replace(by_id[child], parent_id=parent)
-    line_ids = {
-        line_no: row.task_id
-        for line_no, row in pair(plan_items, tuple(by_id.values())).items()
-    }
-    for head in plan.new:  # document order: a new parent precedes its kids
-        parent_id = line_ids.get(head.parent_line)
-        task_id = mint_id(head.section, parent_id, tuple(by_id.values()))
-        checked = head.checkbox == 'x'
-        by_id[task_id] = Task(
-            task_id=task_id, parent_id=parent_id,
-            seq=plan_items.index(head) + 1, section=head.section,
-            title=head.title, body=head.body,
-            text_hash=title_hash(head.title),
-            status=Status.DONE if checked else Status.TODO,
-            owner='human' if checked else None, claimed_at=None,
-            done_at=NOW if checked else None, done_note=None,
-        )
-        line_ids[head.line_no] = task_id
-    return tuple(by_id.values())
+def facts(plan) -> tuple:
+    """The four facts a SyncPlan reports, rows aside."""
+    return (plan.new, plan.vanished, plan.checked, plan.regressed)
 
 
 def test_annotate_preserves_nongrammar_bytes():
@@ -242,7 +154,7 @@ def test_annotate_preserves_nongrammar_bytes():
     its own grammar lines. Generator + seeds 0-99."""
     for seed in SEEDS:
         text = generate_document(seed)
-        rows = mutate_rows(task_rows(parse_plan(text)), seed)
+        rows = mutate_rows(init_rows(text), seed)
         before = text.split('\n')
         after = annotate_lines(text, rows).split('\n')
         assert len(after) == len(before), seed
@@ -259,7 +171,7 @@ def test_annotate_then_parse_is_stable():
     for seed in SEEDS:
         text = generate_document(seed)
         found = parse_plan(text)
-        rows = mutate_rows(task_rows(found), seed)
+        rows = mutate_rows(init_rows(text), seed)
         again = parse_plan(annotate_lines(text, rows))
         assert len(again) == len(found), seed
         for old, new in zip(found, again, strict=True):
@@ -267,32 +179,33 @@ def test_annotate_then_parse_is_stable():
 
 
 def test_compute_sync_is_idempotent():
-    """§8: applying a computed SyncPlan to the rows, then recomputing
-    against the same text, yields an empty SyncPlan.
-
-    Exactly ONE shape is deferred by design (compute_sync docstring):
-    an existing task re-indented under a *brand-new* parent, whose
-    parent has no task id to report until the new rows exist. So:
-    apply, annotate (sync's step 9), recompute -> every field empty
-    except `reparented`, and every entry there must be that one shape -
-    the task's line in the settled text has a parent_line that `first`
-    reported as new. Apply that -> empty. Two passes (insert the new
-    rows, recompute once) is therefore a contract for the step-8 sync
-    verb, not an accident of this test.
-    """
+    """§8/D24: apply a computed SyncPlan to the rows, annotate (sync's
+    last step), recompute against the settled text -> nothing is left in
+    ONE pass: no new, vanished, checked or regressed ids, and rows equal
+    to the live rows. A child under a brand-new parent got its dotted id
+    in the first pass (mint_id), so the Rev 8 deferral is gone."""
     for seed in SEEDS:
         base = generate_document(seed)
-        rows = task_rows(parse_plan(base))
+        rows = mutate_rows(init_rows(base), seed)
         edited = mutate_document(base, seed)
-        first = compute_sync(parse_plan(edited), rows)
-        rows = apply_sync(first, parse_plan(edited), rows)
+        rows = settle(compute_sync(parse_plan(edited), rows), rows)
         settled = annotate_lines(edited, rows)
-        parsed = parse_plan(settled)
-        second = compute_sync(parsed, rows)
-        assert dataclasses.asdict(second) == {
-            **ALL_EMPTY, 'reparented': second.reparented,
-        }, seed
-        assert deferred_by_new_parent(second, parsed, rows, first.new), seed
-        rows = apply_sync(second, parsed, rows)
-        third = compute_sync(parsed, rows)
-        assert dataclasses.asdict(third) == dict(ALL_EMPTY), seed
+        second = compute_sync(parse_plan(settled), rows)
+        assert facts(second) == NO_FACTS, seed
+        assert settle(second, rows) == rows, seed
+
+
+def test_minted_ids_unique_and_never_reused():
+    """I5: through two rounds of edits ids stay unique across the whole
+    board, and a minted id never repeats an existing one - the orphaned
+    rows the first round left behind included."""
+    for seed in SEEDS:
+        base = generate_document(seed)
+        edited = mutate_document(base, seed)
+        rows = init_rows(base)
+        rows = settle(compute_sync(parse_plan(edited), rows), rows)
+        twice = mutate_document(edited, seed + 1)
+        again = compute_sync(parse_plan(twice), rows)
+        assert not set(again.new) & {row.task_id for row in rows}, seed
+        ids = [row.task_id for row in settle(again, rows)]
+        assert len(ids) == len(set(ids)), seed
