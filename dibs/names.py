@@ -7,11 +7,15 @@ secrets.choice / secrets.token_hex over random - not for security
 a suppression.
 """
 
+import secrets
 from sqlite3 import Connection
 
+from dibs import transitions
 from dibs.records import Agent
 
 ID_DIGITS = 4  # numeric suffix width in 'name-NNNN' ids (SSoT §7)
+ID_SPACE = 10 ** ID_DIGITS  # suffixes 0000..9999
+KEY_GROUP_BYTES = 2  # two hex chars per byte: 'dibs-7f3a-9c2e' (SSoT §13)
 
 ADJECTIVES = (
     'agile', 'amber', 'bold', 'brave', 'breezy', 'bright', 'brisk',
@@ -42,9 +46,15 @@ def mint_identity(conn: Connection, now: int) -> Agent:
     `now` stamps the join event - one clock per invocation (I6).
 
     Name for display, id for command input (D8, I7); scope is this
-    board only (SSoT §7).
+    board only (SSoT §7). secrets, not random, only to keep bandit
+    quiet - confusion resistance is not security (D8).
     """
-    raise NotImplementedError('ARCHITECTURE §13 step 8: mint_identity')
+    while True:
+        name = f'{secrets.choice(ADJECTIVES)}-{secrets.choice(ANIMALS)}'
+        digits = str(secrets.randbelow(ID_SPACE)).zfill(ID_DIGITS)
+        agent = Agent(agent_id=f'{name}-{digits}', name=name)
+        if transitions.register_agent(conn, agent, now):
+            return agent
 
 
 def mint_board_key() -> str:
@@ -53,4 +63,6 @@ def mint_board_key() -> str:
     The dibs- prefix makes every handoff line its own skill trigger
     (D20); truth lives in meta.board_key, the registry is a cache.
     """
-    raise NotImplementedError('ARCHITECTURE §13 step 8: mint_board_key')
+    head = secrets.token_hex(KEY_GROUP_BYTES)
+    tail = secrets.token_hex(KEY_GROUP_BYTES)
+    return f'dibs-{head}-{tail}'

@@ -149,8 +149,10 @@ def registry_lookup(key) -> Path | None       # key → absolute plan path, or N
 @dataclass(frozen=True) class SyncPlan:
     rows: tuple[Task, ...]        # EVERY checkbox line as the row it should be, in document order: a paired line is its
                                   # DB row with the text-cached columns refreshed (seq, section, parent_id, title, body);
-                                  # an unpaired line is a fresh row (mint_id, status todo, owner None). State columns of
-                                  # paired rows pass through untouched — apply_sync never writes them (D4).
+                                  # an unpaired line is a fresh row (mint_id): todo and unowned, or done by human when
+                                  # hand-checked — the one state the diff itself decides, so verify previews what init
+                                  # creates (D21, D24). Every other state column passes through untouched; apply_sync
+                                  # only stamps done_at (and the DONE event) on `checked` (D4).
     new: tuple[str, ...]          # ids of rows that did not exist (F6 settled: ids, the rows are in `rows`)
     vanished: tuple[str, ...]     # live DB rows whose line disappeared → orphaned (I5)
     checked: tuple[str, ...]      # ids whose line is [x] while the row is todo — new [x] lines included, so init and
@@ -191,8 +193,9 @@ def found_board(conn, now, key, max_hand) -> bool                # UPDATE meta S
                                                                  # steering to sync); sets max_hand; one INIT event
 def apply_sync(conn, now, plan_items, plan_mtime) -> SyncPlan    # under the write lock: board_snapshot → compute_sync →
                                                                  # UPSERT every row (insert fresh; on conflict refresh only
-                                                                 # the text-cached columns) → orphan vanished → import
-                                                                 # checked (done, owner 'human', one done event each) →
+                                                                 # the text-cached columns) → orphan vanished → stamp
+                                                                 # done_at on checked (one done event each; the rows
+                                                                 # already say done by human) →
                                                                  # one SYNC event carrying the summary → stamp plan_mtime.
                                                                  # Returns the SyncPlan it applied (facts for views).
                                                                  # Init IS this on an empty board (D24).
@@ -335,7 +338,7 @@ plan.md ────► PlanItem[] ──────────► SyncPlan.ro
 - **C8** — No mutable module state anywhere; state flows through `Context` or lives in the DB.
 - **C9** — Decisions branch in SQL, Python reads rowcounts. If a verb grows an if-tree, the WHERE clause is missing something; if a read needs to pick between outcomes, it returns a `Refusal` from a `CASE`.
 - **C10** — Every command runs the §6 pipeline in order; housekeeping precedes the verb so `claim` sees freshly reaped tasks.
-- **C11** — **Sync reads under the lock it writes with.** `apply_sync` opens `BEGIN IMMEDIATE`, *then* reads `board_snapshot`, *then* computes and writes. Two workers auto-syncing the same edit therefore serialize: the second sees the first's rows and finds nothing new. `compute_sync` is a deterministic function of (snapshot, text), so even the unlocked case would converge; the lock is what keeps a fast second edit from reassigning an id (I5). The UPSERT refreshes only text-cached columns (`seq`, `section`, `parent_id`, `title`, `body`) and never a state column; ids are minted from *all* rows, orphaned included, so an id is never reused (I5).
+- **C11** — **Sync reads under the lock it writes with.** `apply_sync` opens `BEGIN IMMEDIATE`, *then* reads `board_snapshot`, *then* computes and writes. Two workers auto-syncing the same edit therefore serialize: the second sees the first's rows and finds nothing new. `compute_sync` is a deterministic function of (snapshot, text), so even the unlocked case would converge; the lock is what keeps a fast second edit from reassigning an id (I5). The UPSERT refreshes only text-cached columns (`seq`, `section`, `parent_id`, `title`, `body`) and never a state column (a fresh row is inserted whole, hand-checked ones as done by human); ids are minted from *all* rows, orphaned included, so an id is never reused (I5).
 
 ## 9. Verb → modules → SSoT trace
 
@@ -397,7 +400,7 @@ Fixtures in `conftest.py`: `plan_text` (sample document), `board(tmp_path)` (ini
 
 | Tier | Targets | Key cases |
 |---|---|---|
-| Unit (pure) | `planfile`, `names.pick`, `output`, `views` | §8 recognition table incl. nested checkboxes → `parent_line`, indented prose stays body (D22); annotation grammar; hash normalization; **id minting** — letters by first appearance, ordinals never reused (an orphaned `A2` means the next is `A3`), dotted children, a child under a new parent minted in the same pass, letters past `Z`; `SyncPlan.rows` refreshes seq/section/parent/body and passes state through; event one-liners; every `Refusal` renders a runnable steer; `format_board` renders tree, `2/3` progress, bodiless/duplicate warnings, and the same text for verify's rows as for a snapshot (D21, D22, D24) |
+| Unit (pure) | `planfile`, `names.pick`, `output`, `views` | §8 recognition table incl. nested checkboxes → `parent_line`, indented prose stays body (D22); annotation grammar; hash normalization; **id minting** — letters by first appearance, ordinals never reused (an orphaned `A2` means the next is `A3`), dotted children, a child under a new parent minted in the same pass, letters past `Z`; `SyncPlan.rows` refreshes seq/section/parent/body, passes state through, and carries a hand-checked todo line as done by human; event one-liners; every `Refusal` renders a runnable steer; `format_board` renders tree, `2/3` progress, bodiless/duplicate warnings, and the same text for verify's rows as for a snapshot (D21, D22, D24) |
 | Property / metamorphic | `planfile`, `transitions` | `annotate_lines` preserves every non-grammar byte (I4) across generated docs; **sync is idempotent in one pass**: apply a computed `SyncPlan`, recompute against the settled text → every field empty, no deferral (the Rev 8 "reparented on the second pass" clause is gone with `mint_id`); minted ids are unique across the applied rows and never collide with orphaned ones; claim order respects affinity→seq (D7); **gating invariant:** a parent is never claimable while any todo/doing child exists, across random trees and completion orders (D22) |
 | Integration (tmp DB) | `transitions`, `plansync`, `queries`, `store` | **the CAS race:** two threads claim one task, exactly one wins (I1/I2); bundle all-or-none and must fit the hand (D6); **hand limit:** claim refused at capacity, respawned identity steered back to its held task (D6); **gating:** no-arg claim skips gated parents, explicit `--task` on one is refused naming open children, orphaned children don't block, `claim_refusal` returns each of the six kinds with the right names (D22, D6); `newly_unlocked` fires exactly on the last child's `finish` (D22); `finish` rejects non-owner (I2); TTL reap + lease refresh (D9); `register_agent` UNIQUE retry and join event stamped with `now`; cursor advance (D10); board-key registry record/lookup + self-heal (D20); **plansync:** `found_board` wins once (rowcount, two calls → True/False, one INIT event), `apply_sync` on an empty board inserts every row + imports hand-`[x]` as done by human, a second `apply_sync` on the same text writes nothing but its SYNC event, edits to body/heading/indent/order refresh the cached columns and never a state column, a vanished line orphans, two connections syncing the same edit under `BEGIN IMMEDIATE` converge on one row set (C11) |
 | End-to-end | `cli.main` | full loop init→join→claim→done; init prints the key and `--plan <key>` resolves from an unrelated CWD (D20); auto-sync after a human edit (I9); every refusal exits 1 with a `Run:` line; SQLite below the floor exits 1 with the OLD_SQLITE steer (monkeypatched version tuple); assert final plan.md text and exit codes |

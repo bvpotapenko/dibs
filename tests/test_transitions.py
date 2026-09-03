@@ -270,7 +270,7 @@ def test_housekeeping_reaps_past_ttl(board, two_agents):
         (event.kind, event.task_id, event.agent, event.text, event.ts)
         for event in transitions.housekeeping(board.conn, None, STALE)
     ]
-    assert reaped == [(EventKind.REAP, 'A1', 'system', otter.agent_id, STALE)]
+    assert reaped == [(EventKind.REAP, 'A1', 'system', otter.name, STALE)]
     freed = peek_task(board, 'A1')
     assert (freed['status'], freed['owner']) == (Status.TODO.value, None)
     assert peek_task(board, 'A2.1')['owner'] == elephant.agent_id  # young

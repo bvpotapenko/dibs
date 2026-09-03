@@ -13,9 +13,8 @@ from dataclasses import astuple
 from sqlite3 import Connection
 
 from dibs import planfile, queries, views
-from dibs.records import EventKind
+from dibs.records import HUMAN, EventKind
 
-HUMAN = 'human'  # the plan author as an actor (SSoT §5, §8)
 # Take the write lock up front so contention waits on busy_timeout (D2).
 BEGIN = 'BEGIN IMMEDIATE'
 
@@ -46,10 +45,12 @@ ORPHAN_SQL = """
 UPDATE tasks SET status = 'orphaned'
 WHERE id IN (SELECT value FROM json_each(?1))
 """
-# ?1 now  ?2 ids as a JSON array - hand-checked lines over todo rows (§8)
+# ?1 now  ?2 ids as a JSON array - hand-checked lines (§8): their rows
+# already say done by human (compute_sync); this stamps the clock. The
+# list is exact under the lock (C11), so no WHERE guard is needed.
 IMPORT_SQL = """
 UPDATE tasks SET status = 'done', owner = 'human', done_at = ?1
-WHERE id IN (SELECT value FROM json_each(?2)) AND status = 'todo'
+WHERE id IN (SELECT value FROM json_each(?2))
 """
 # ?1 now  ?2 the same ids - one DONE event per import (I6, C3)
 IMPORT_EVENTS_SQL = """
@@ -85,10 +86,10 @@ def apply_sync(
     """Import plan text into the board in one transaction (SSoT §8, D24).
 
     Under the lock: board_snapshot -> compute_sync -> UPSERT every row
-    (fresh rows inserted, matched rows' text-cached columns refreshed) ->
-    orphan vanished -> import checked as done by 'human', one DONE event
-    each -> one SYNC event carrying views.format_sync -> stamp plan_mtime.
-    Returns the SyncPlan it applied (C11).
+    (fresh rows inserted whole, matched rows' text-cached columns
+    refreshed) -> orphan vanished -> stamp done_at on checked, one DONE
+    event each -> one SYNC event carrying views.format_sync -> stamp
+    plan_mtime. Returns the SyncPlan it applied (C11).
     """
     with conn:
         conn.execute(BEGIN)
