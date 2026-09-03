@@ -22,7 +22,6 @@ from operator import itemgetter
 from dibs.records import Agent, Event, EventKind, Status, Task
 
 REAP_TTL_SECONDS = 2700  # 45 minutes (SSoT §13); D9 passive reaping
-SYSTEM = 'system'  # the reaper as an actor (SSoT §5, D9)
 # Take the write lock up front so contention waits on busy_timeout
 # instead of failing mid-transaction (D2).
 BEGIN = 'BEGIN IMMEDIATE'
@@ -101,10 +100,15 @@ WHERE id = ?2
 
 LAST_EVENT_SQL = 'SELECT COALESCE(MAX(id), 0) FROM events'
 
-# ?1 now  ?2 cutoff - one reap event per stale claim, before the revert
+# ?1 now  ?2 cutoff - one reap event per stale claim by the 'system'
+# actor (SSoT §5, D9), before the revert;
+# its text is the former holder's NAME, display-safe like every event
+# text (I7): titles, notes, names, the board key, the sync summary
 REAP_EVENTS_SQL = """
 INSERT INTO events (ts, agent, kind, task_id, to_agent, text)
-SELECT ?1, 'system', 'reap', id, NULL, owner FROM tasks
+SELECT ?1, 'system', 'reap', tasks.id, NULL,
+       COALESCE((SELECT name FROM agents WHERE agents.id = tasks.owner), owner)
+FROM tasks
 WHERE status = 'doing' AND claimed_at < ?2
 ORDER BY seq
 """

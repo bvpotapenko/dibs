@@ -1,12 +1,15 @@
 """Domain rows: frozen dataclasses and str-enums (SSoT §5).
 
 Data here, behavior in module functions; no methods, no inheritance
-beyond Enum (ARCHITECTURE §1). Level L0: stdlib only. Member budget 6
-(ARCHITECTURE §3).
+beyond Enum (ARCHITECTURE §1). Level L0: stdlib only. Member budget 7 -
+the one function, agent_name, is the id-to-name idiom that three render
+sites share (ARCHITECTURE §3).
 """
 
 from dataclasses import dataclass
 from enum import Enum
+
+HUMAN = 'human'  # the plan author as an actor (SSoT §5, §8)
 
 
 class Status(str, Enum):
@@ -83,3 +86,11 @@ class Board:
     plan_mtime: int
     tasks: tuple[Task, ...]
     events: tuple[Event, ...]
+
+
+def agent_name(agent_id: str | None) -> str:
+    """Display name of an id: 'happy-elephant-4821' -> 'happy-elephant' (I7).
+
+    'human' and 'system' pass through; None renders as '' (SSoT §5, §7).
+    """
+    return (agent_id or '').rsplit('-', 1)[0]

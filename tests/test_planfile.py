@@ -327,13 +327,16 @@ def test_sync_vanished_line_orphaned(plan_text):
 
 
 def test_sync_hand_checked_imports_done(plan_text):
-    """§8 sync: [x] over todo lands in SyncPlan.checked (owner human);
-    the row itself passes its state through - the import is apply_sync's
-    own write (D4, D24)."""
+    """§8 sync: [x] over todo lands in SyncPlan.checked and its row already
+    says done by human - the one state the diff decides, so verify shows
+    what init creates (D21, D24); apply_sync's import stamps done_at."""
     edited = plan_text.replace('- [ ] Fix off-by-one', '- [x] Fix off-by-one')
     plan = compute_sync(parse_plan(edited), init_rows(plan_text))
     only(plan, checked=('A1',))  # A3 is already done: not re-imported
-    assert plan.rows[0].status == Status.TODO
+    ticked = plan.rows[0]
+    assert (ticked.status, ticked.owner, ticked.done_at) == (
+        Status.DONE, 'human', None,
+    )
 
 
 def test_sync_reorder_updates_seq_only(plan_text):
@@ -456,8 +459,9 @@ def test_mint_id_same_pass_and_past_z():
 def test_sync_rows_refresh_text_keep_state(plan_text):
     """Rev 9 SyncPlan.rows: for every line, in document order - matched
     rows carry refreshed seq/section/parent_id/title/body and untouched
-    status/owner/claimed_at/done_*; new rows are todo with minted ids;
-    `new` lists their ids; a new [x] line appears in `checked`."""
+    status/owner/claimed_at/done_*; new rows are todo with minted ids, or
+    done by human when hand-checked; `new` lists their ids; a new [x]
+    line appears in `checked`."""
     rows = list(init_rows(plan_text))
     rows[0] = doing(rows[0])  # A1 is held; its line still says [ ]
     edited = (
@@ -492,7 +496,7 @@ def test_sync_rows_refresh_text_keep_state(plan_text):
         renamed.parent_id, renamed.status, renamed.owner, renamed.done_at,
     ) == ('A2', Status.DONE, 'human', NOW)
     fresh = plan.rows[-1]
-    assert (fresh.task_id, fresh.status, fresh.owner) == (
-        'B2', Status.TODO, None,
+    assert (fresh.task_id, fresh.status, fresh.owner, fresh.done_at) == (
+        'B2', Status.DONE, 'human', None,
     )
     only(plan, new=('B2',), checked=('B2',), regressed=('A1',))

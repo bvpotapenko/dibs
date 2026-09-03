@@ -69,19 +69,20 @@ def test_deliver_events_filters_directed(board, two_agents):
 
 def test_prior_claim_reports_reap(board, two_agents):
     """SSoT §6 claim row: a reaped task's re-claimer learns the prior
-    claimant and when the reap happened - the LAST reap when several."""
+    claimant (by NAME, I7) and when the reap happened - the LAST reap when
+    several."""
     otter, elephant = two_agents
     assert queries.prior_claim(board.conn, 'A1') is None
     transitions.claim(board.conn, otter.agent_id, NOW, ('A1',))
     transitions.housekeeping(board.conn, None, STALE)
     first = queries.prior_claim(board.conn, 'A1')
     assert (first.kind, first.text, first.ts) == (
-        EventKind.REAP, otter.agent_id, STALE,
+        EventKind.REAP, otter.name, STALE,
     )
     transitions.claim(board.conn, elephant.agent_id, STALE, ('A1',))
     transitions.housekeeping(board.conn, None, STALE_AGAIN)
     last = queries.prior_claim(board.conn, 'A1')
-    assert (last.text, last.ts) == (elephant.agent_id, STALE_AGAIN)
+    assert (last.text, last.ts) == (elephant.name, STALE_AGAIN)
     assert queries.prior_claim(board.conn, 'A2.1') is None
 
 

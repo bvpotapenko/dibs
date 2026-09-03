@@ -12,7 +12,7 @@ import sqlite3
 from pathlib import Path
 
 from dibs import planfile, plansync, store
-from dibs.records import Agent, Status, Task
+from dibs.records import HUMAN, Agent, Status, Task
 from dibs.runtime import Context
 
 NOW = 1_700_000_000  # fixed clock for deterministic tests
@@ -39,7 +39,7 @@ def settle(
         by_id[ticked] = dataclasses.replace(
             by_id[ticked],
             status=Status.DONE,
-            owner=plansync.HUMAN,
+            owner=HUMAN,
             done_at=NOW,
         )
     return tuple(by_id.values())

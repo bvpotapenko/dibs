@@ -16,7 +16,7 @@ from string import ascii_uppercase
 from textwrap import dedent
 from types import MappingProxyType, SimpleNamespace
 
-from dibs.records import Status, Task
+from dibs.records import HUMAN, Status, Task, agent_name
 
 # One pattern for every line (SSoT §8 recognition): a column-0 ATX
 # heading ('heading'), a checkbox at any indent ('indent', 'state',
@@ -94,7 +94,7 @@ class SyncPlan:
     rows: tuple[Task, ...]  # every line as the row it should be, in doc order
     new: tuple[str, ...]  # ids minted this pass; their rows sit in `rows`
     vanished: tuple[str, ...]  # live rows whose line disappeared -> orphaned
-    checked: tuple[str, ...]  # [x] over todo, new lines too -> done by human
+    checked: tuple[str, ...]  # [x] over todo, new lines too: stamp done_at
     regressed: tuple[str, ...]  # [ ] over doing/done: DB wins, warning
 
 
@@ -168,8 +168,11 @@ def compute_sync(
     One pass in document order turns every line into the row it should
     be: a paired row with its text-cached columns refreshed, or a fresh
     row whose id mint_id draws from every row known so far - so a child
-    under a brand-new parent gets its dotted id immediately. Pure and
-    idempotent: apply the result and recompute, and every fact is empty.
+    under a brand-new parent gets its dotted id immediately. The one
+    state the diff decides: a [x] line over a todo or fresh row is
+    carried as done by human (`checked` lists it for the clock stamp), so
+    verify previews what init creates (D21, D24). Pure and idempotent:
+    apply the result and recompute, and every fact is empty.
     """
     queues = {  # text_hash -> live rows in seq order, consumed as paired
         group[0]: iter(tuple(group[1]))
@@ -209,6 +212,13 @@ def compute_sync(
             body=plan_item.body,
             text_hash=title_hash(plan_item.title),
         )
+        if (
+            plan_item.checkbox == CHECKED
+            and lines[plan_item.line_no].status == Status.TODO
+        ):
+            lines[plan_item.line_no] = replace(
+                lines[plan_item.line_no], status=Status.DONE, owner=HUMAN,
+            )
     return SyncPlan(
         rows=tuple(lines.values()),
         new=tuple(
@@ -308,7 +318,7 @@ def annotate_lines(text: str, tasks: tuple[Task, ...]) -> str:
             ].format(
                 indent=LINE_RE.match(lines[head.line_no - 1])['indent'],
                 title=head.title,
-                name=(task.owner or '').rsplit('-', 1)[0],
+                name=agent_name(task.owner),
                 note=' '.join((task.done_note or '').split()),
             ) + LINE_RE.match(lines[head.line_no - 1])['ending']
     return '\n'.join(
