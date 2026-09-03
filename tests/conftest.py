@@ -1,9 +1,10 @@
 """Shared fixtures for the dibs test suite (ARCHITECTURE §11).
 
 Tiers map to files, not directories (the lint config globs a flat
-tests/): unit = test_records / test_names / test_planfile /
-test_output, property = test_property_*, integration = test_store /
-test_transitions / test_queries, end-to-end = test_cli.
+tests/): unit = test_records / test_runtime / test_names /
+test_planfile / test_output, property = test_property_*,
+integration = test_store / test_transitions / test_queries,
+end-to-end = test_cli.
 
 Skeleton state: every test below the pure tier raises
 NotImplementedError until its module lands (ARCHITECTURE §13); the
