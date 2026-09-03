@@ -63,10 +63,9 @@ def board(tmp_path, plan_text):
     """Initialized board on tmp_path -> runtime.Context (actor None).
 
     Build: write plan.md from plan_text; store.connect on
-    tmp_path/'.plan.md.dibs' + ensure_schema; seed tasks from
-    planfile.compute_sync(parse_plan(text), ()).rows and import the
-    hand-checked ones (tests/boards.build_board); return
-    Context(conn, plan, db, None, NOW).
+    tmp_path/'.plan.md.dibs' + ensure_schema; seed through
+    plansync.apply_sync on the empty board, key left unfounded
+    (tests/boards.build_board); return Context(conn, plan, db, None, NOW).
     """
     ctx = build_board(tmp_path, plan_text)
     yield ctx

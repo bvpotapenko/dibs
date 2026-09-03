@@ -1,4 +1,11 @@
-"""Unit: multi-line bodies (C5; §13 step 9). Hand-built records, no DB."""
+"""Unit: multi-line bodies (C5; §13 steps 7, 9). Hand-built records, no DB."""
+
+import dataclasses
+
+from dibs.planfile import compute_sync, parse_plan
+from dibs.records import Status
+from dibs.views import format_sync
+from tests.boards import OTTER, init_rows
 
 
 def test_board_shows_tree_progress_and_key(plan_text):
@@ -29,7 +36,22 @@ def test_briefing_identity_title_body_priors():
     raise NotImplementedError('needs views.format_briefing (§13 step 9)')
 
 
-def test_sync_summary_counts_and_warnings():
+def test_sync_summary_counts_and_warnings(plan_text):
     """§8: counts + ids for new / orphaned / imported, one warning line per
-    regressed id; same text as the SYNC event body."""
-    raise NotImplementedError('needs views.format_sync (§13 step 9)')
+    regressed id; same text as the SYNC event body (test_plansync pins
+    that side)."""
+    rows = list(init_rows(plan_text))
+    rows[0] = dataclasses.replace(
+        rows[0], status=Status.DOING, owner=OTTER.agent_id, claimed_at=1,
+    )
+    edited = plan_text.replace('  - [ ] Cover the empty file\n', '')
+    edited = f'{edited}- [x] Write the changelog\n'
+    plan = compute_sync(parse_plan(edited), tuple(rows))
+    assert format_sync(plan) == (
+        'synced 6 tasks: 1 new (B2), 1 orphaned (A2.2), '
+        '1 imported as done (B2)',
+        'warning: A1 stays doing (board wins); its [ ] in the plan was '
+        're-annotated',
+    )
+    unchanged = compute_sync(parse_plan(plan_text), init_rows(plan_text))
+    assert format_sync(unchanged) == ('synced 6 tasks: nothing changed',)
