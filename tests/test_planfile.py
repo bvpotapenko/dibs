@@ -12,7 +12,6 @@ from dibs.planfile import annotate_lines, compute_sync, parse_plan, title_hash
 from dibs.records import Status
 from tests.boards import ELEPHANT, OTTER, task_rows
 
-GRAMMAR_LINE = re.compile(r'^[ \t]*- \[')
 EMPTY_SYNC = MappingProxyType({
     'new': (), 'vanished': (), 'checked': (),
     'reordered': (), 'reparented': (), 'regressed': (),
@@ -24,6 +23,17 @@ TITLES = (
     'Cover the empty file',
     'Rename Lexer to Tokenizer',
     'Update the README quickstart',
+)
+# Checkbox lookalikes outside the §8 state grammar: prose, not tasks.
+NON_GRAMMAR = (
+    '- [-] cancelled\n',  # a common Markdown 'cancelled' marker
+    '- [] blank\n',
+    '- [wip] custom state\n',
+    '- [ x ] padded\n',
+    '- [~] no name\n',
+    '- [ ]no space\n',
+    '- [ ]\ttab\n',
+    '- [ ]\n',
 )
 # Fixture line numbers (1-based) of the six checkbox lines in plan_text.
 FIX = 7
@@ -157,6 +167,21 @@ def test_parse_fence_lookalike_policy():
     assert [head.parent_line for head in found] == [None, None]
 
 
+def test_parse_rejects_checkbox_lookalikes():
+    """§8/I4: the state token is only ' ', 'x'/'X' or '~ <name>', and
+    the space after ']' is required. Every other bracket shape is the
+    human's prose: never a task, never rewritten (D5, I4).
+    """
+    for text in NON_GRAMMAR:
+        found = parse_plan(text)
+        assert found == (), text
+        assert annotate_lines(text, task_rows(found)) == text, text
+    upper = parse_plan('- [X] Rename Lexer to Tokenizer\n')
+    assert (upper[0].checkbox, upper[0].title) == (
+        'x', 'Rename Lexer to Tokenizer',
+    )
+
+
 def test_annotate_rewrites_only_grammar_lines(plan_text):
     """I4: every byte outside annotation-grammar lines is preserved."""
     rows = list(task_rows(parse_plan(plan_text)))
@@ -199,6 +224,24 @@ def test_annotate_todo_doing_done_forms():
     )
 
 
+def test_annotate_collapses_multiline_notes():
+    """§8/I4: the done form is ONE line, so a note carrying newlines
+    or a CRLF renders whitespace-collapsed - a stray prose line the
+    human never wrote must never appear. The DB keeps the note
+    verbatim; only the plan line is single-line (D4).
+    """
+    text = '- [ ] a\n- [ ] b\n'
+    rows = list(task_rows(parse_plan(text)))
+    rows[0] = done(rows[0], 'first\nsecond\r\n   third\t')
+    once = annotate_lines(text, tuple(rows))
+    assert once == (
+        '- [x] a  ✓ happy-elephant: first second third\n'
+        '- [ ] b\n'
+    )
+    assert once.count('\n') == text.count('\n')
+    assert annotate_lines(once, tuple(rows)) == once
+
+
 def test_annotate_is_idempotent(plan_text):
     """I4: annotating an already-annotated text changes nothing."""
     rows = list(task_rows(parse_plan(plan_text)))
@@ -219,12 +262,20 @@ def test_hash_normalizes_case_and_spaces():
 
 
 def test_hash_excludes_done_annotation():
-    """§8: the '✓ name: note' suffix never feeds the title hash."""
+    """§8: the '✓ name: note' suffix never feeds the title hash - and
+    ONLY that exact suffix is excluded. A '✓' the author typed inside a
+    title is part of the title (D4: plan.md is text truth) and survives
+    annotation byte-for-byte (I4).
+    """
     found = parse_plan('- [x] Fix it  ✓ brave-otter: done, two files\n')
     assert found[0].title == 'Fix it'
     assert title_hash(found[0].title) == title_hash('Fix it')
     marked = parse_plan('- [~ brave-otter] Fix it\n')
     assert title_hash(marked[0].title) == title_hash('Fix it')
+    authored = '- [ ] verify ✓ marks render\n'
+    kept = parse_plan(authored)
+    assert kept[0].title == 'verify ✓ marks render'
+    assert annotate_lines(authored, task_rows(kept)) == authored
 
 
 def test_sync_new_line_becomes_task(plan_text):

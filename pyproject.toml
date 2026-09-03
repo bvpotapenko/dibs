@@ -60,4 +60,5 @@ known-first-party = ["dibs"]
 
 [tool.ruff.lint.per-file-ignores]
 # Mirrors setup.cfg per-file-ignores (ARCHITECTURE §10).
-"tests/*" = ["S101", "D"]
+# S311: seeded stdlib PRNG for determinism, ARCHITECTURE §11.
+"tests/*" = ["S101", "D", "S311"]

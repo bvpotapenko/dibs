@@ -3,7 +3,7 @@
   ____/ (_) /_  _____
  / __  / / __ \/ ___/
 / /_/ / / /_/ (__  )
-\__,_/_/_.___/____/      [ ]  ->  [~ happy-elephant]  ->  [x]
+\__,_/_/_.___/____/      [ ]  ->  [~ happy-elephant]  ->  [✓]
 ```
 
 Call dibs on tasks. A tiny CLI board so several AI agents can work one `plan.md` in parallel without doing the same task twice.

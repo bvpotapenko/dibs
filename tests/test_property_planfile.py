@@ -18,16 +18,22 @@ from dibs.records import Status, Task
 from tests.boards import ELEPHANT, NOW, OTTER, task_rows
 
 SEEDS = range(100)
-GRAMMAR_LINE = re.compile(r'^[ \t]*- \[')
+# The §8 annotation grammar exactly as dibs/planfile.LINE_RE reads it:
+# the only lines the tool is licensed to rewrite. Anything else the
+# generator emits must survive byte-identical (I4).
+GRAMMAR_LINE = re.compile(r'^[ \t]*- \[( |x|X|~ [^\]]+)\] ')
 TITLES = (
     'Fix the parser', 'Ship it', 'Größe prüfen', 'Write docs',
     'Cover 日本語 input', 'Same title', 'Same title', 'Trailing spaces   ',
+    'Render ✓ marks',  # an authored check mark, not an annotation (F4)
 )
 PROSE = (
     'Plain prose line.', 'Ünïcödé — prose ✓ with a check mark',
     '\tTabbed prose', 'Trailing spaces   ', '- plain bullet',
     '1. numbered', '```', '```python', '    code = "x"  # four spaces',
     '# Heading', '## Sub heading', '### Deep heading', '', '   ',
+    # Checkbox lookalikes outside the §8 state grammar (I4, D5).
+    '- [-] cancel', '- [] blank', '- [ ]nospace',
 )
 INDENTS = ('', '', '  ', '    ', ' ', '\t')
 STATES = (' ', ' ', 'x', '~ brave-otter')
@@ -35,6 +41,9 @@ SUFFIXES = ('', '', '  ✓ happy-elephant: some note')
 ENDINGS = ('\n', '\r\n')
 LINE_KINDS = ('checkbox', 'body', 'prose')
 LINE_WEIGHTS = (9, 5, 6)
+# A multi-line note: §8's done form is one line, so annotate must
+# collapse it - the line count assertion in the I4 fuzz is the guard.
+DONE_NOTE = 'note ✓ with: punctuation\nand a second line\r\n\tthird'
 ROW_KINDS = ('doing', 'done', 'orphaned', 'todo')
 ROW_WEIGHTS = (5, 5, 2, 8)
 ALL_EMPTY = MappingProxyType({
@@ -77,7 +86,7 @@ def mutate_rows(rows: tuple[Task, ...], seed: int) -> tuple[Task, ...]:
         elif kind == 'done':
             out.append(dataclasses.replace(
                 row, status=Status.DONE, owner=ELEPHANT.agent_id,
-                done_at=NOW, done_note='note ✓ with: punctuation',
+                done_at=NOW, done_note=DONE_NOTE,
             ))
         elif kind == 'orphaned':
             out.append(dataclasses.replace(row, status=Status.ORPHANED))
@@ -177,6 +186,22 @@ def mint_id(section: str, parent_id: str | None, rows) -> str:
     return f'{prefix}{ordinal}'
 
 
+def deferred_by_new_parent(plan, plan_items, rows, inserted) -> bool:
+    """Is every surviving reparent the ONE deferral compute_sync documents?
+
+    True when each reparented task's line hangs under a line the first
+    pass reported as new: that parent existed only as a fresh insertion,
+    so it had no task id to report yet (§8, compute_sync docstring).
+    """
+    heads = {head.line_no: head for head in plan_items}
+    parents = {
+        row.task_id: heads[line_no].parent_line
+        for line_no, row in pair(plan_items, rows).items()
+    }
+    fresh = {head.line_no for head in inserted}
+    return all(parents[moved] in fresh for moved in dict(plan.reparented))
+
+
 def apply_sync(plan, plan_items, rows: tuple[Task, ...]) -> tuple[Task, ...]:
     """What sync (§13 step 8) will do with a SyncPlan, minus the DB."""
     by_id = {row.task_id: row for row in rows}
@@ -245,10 +270,15 @@ def test_compute_sync_is_idempotent():
     """§8: applying a computed SyncPlan to the rows, then recomputing
     against the same text, yields an empty SyncPlan.
 
-    One case is deferred by design (compute_sync docstring): an existing
-    task re-indented under a brand-new parent is reparented on the
-    recompute after insertion. So: apply, annotate (sync's step 9),
-    recompute -> only `reparented` may remain; apply that -> empty.
+    Exactly ONE shape is deferred by design (compute_sync docstring):
+    an existing task re-indented under a *brand-new* parent, whose
+    parent has no task id to report until the new rows exist. So:
+    apply, annotate (sync's step 9), recompute -> every field empty
+    except `reparented`, and every entry there must be that one shape -
+    the task's line in the settled text has a parent_line that `first`
+    reported as new. Apply that -> empty. Two passes (insert the new
+    rows, recompute once) is therefore a contract for the step-8 sync
+    verb, not an accident of this test.
     """
     for seed in SEEDS:
         base = generate_document(seed)
@@ -257,10 +287,12 @@ def test_compute_sync_is_idempotent():
         first = compute_sync(parse_plan(edited), rows)
         rows = apply_sync(first, parse_plan(edited), rows)
         settled = annotate_lines(edited, rows)
-        second = compute_sync(parse_plan(settled), rows)
+        parsed = parse_plan(settled)
+        second = compute_sync(parsed, rows)
         assert dataclasses.asdict(second) == {
             **ALL_EMPTY, 'reparented': second.reparented,
         }, seed
-        rows = apply_sync(second, parse_plan(settled), rows)
-        third = compute_sync(parse_plan(settled), rows)
+        assert deferred_by_new_parent(second, parsed, rows, first.new), seed
+        rows = apply_sync(second, parsed, rows)
+        third = compute_sync(parsed, rows)
         assert dataclasses.asdict(third) == dict(ALL_EMPTY), seed

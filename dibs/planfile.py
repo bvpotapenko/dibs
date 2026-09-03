@@ -21,10 +21,21 @@ from dibs.records import Status, Task
 # 'ending', the CR of a CRLF line), or anything else - so a match
 # always exists. The line rule wins even inside code fences (pinned by
 # test_parse_fence_lookalike_policy). Text splits on '\n'.
+#
+# 'state' admits ONLY the three §8 tokens - ' ', 'x' (or 'X'), and
+# '~ <name>' - and the separating space after ']' is required. Any
+# other bracket content ('- [-] cancelled', '- [] blank', '- [wip] x',
+# '- [ ]nospace') is prose the tool must never rewrite (I4, D5).
+#
+# The excluded suffix is the tool's OWN done annotation and nothing
+# else: two-plus spaces, '✓ ', a whitespace/colon-free name, ':', rest
+# of line. A '✓' the author typed in a title stays in the title (D4:
+# plan.md is text truth). Residual ambiguity: a title that itself ends
+# in a full '  ✓ name: text' form reads as an annotation - accepted.
 LINE_RE = re.compile(
     r'^(?:#{1,6}[ \t]+(?P<heading>.*)'
-    r'|(?P<indent>[ \t]*)- \[(?P<state>[^\]]*)\] ?'
-    r'(?P<title>.*?)[ \t]*(?:✓[^\r]*)?(?P<ending>\r?)'
+    r'|(?P<indent>[ \t]*)- \[(?P<state>[ xX]|~ [^\]]+)\] '
+    r'(?P<title>.*?)[ \t]*(?:[ \t]{2,}✓ [^\s:]+:[^\r]*)?(?P<ending>\r?)'
     r'|.*)$',
 )
 CHECKED = 'x'
@@ -44,6 +55,9 @@ ParentUpdate = tuple[str, str | None]
 # keyed by (status, done_note is None). A done row with no note (a
 # hand-checked [x] imported by sync) keeps the bare form: the tool has
 # nothing to add. Orphaned rows are never rendered - they left the plan.
+# Every form is exactly ONE line: the note is whitespace-collapsed on
+# render so a multi-line --note cannot inject prose the human never
+# wrote (I4). The DB keeps the note verbatim - state truth is there (D4).
 LINE_FORMS = MappingProxyType({
     (Status.TODO, True): '{indent}- [ ] {title}',
     (Status.TODO, False): '{indent}- [ ] {title}',
@@ -210,7 +224,10 @@ def annotate_lines(text: str, tasks: tuple[Task, ...]) -> str:
 
     Grammar lines pair with rows exactly as compute_sync pairs them
     (hash, duplicates by order); an unpaired grammar line is left as
-    written. LF and CRLF endings are preserved.
+    written. LF and CRLF endings are preserved, and the line count
+    never changes: a done-note carrying newlines renders collapsed to
+    single spaces (§8's done form is one line; the verbatim note stays
+    in the DB per D4).
     """
     queues = {  # text_hash -> live rows in seq order, consumed as paired
         group[0]: iter(tuple(group[1]))
@@ -236,7 +253,7 @@ def annotate_lines(text: str, tasks: tuple[Task, ...]) -> str:
                 indent=LINE_RE.match(lines[head.line_no - 1])['indent'],
                 title=head.title,
                 name=(task.owner or '').rsplit('-', 1)[0],
-                note=task.done_note,
+                note=' '.join((task.done_note or '').split()),
             ) + LINE_RE.match(lines[head.line_no - 1])['ending']
     return '\n'.join(
         replacements.get(line_no, lines[line_no - 1])
