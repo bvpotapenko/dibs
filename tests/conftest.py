@@ -4,7 +4,8 @@ Tiers map to files, not directories (the lint config globs a flat
 tests/): unit = test_records / test_runtime / test_names /
 test_planfile / test_output, property = test_property_*,
 integration = test_store / test_transitions / test_queries,
-end-to-end = test_cli.
+end-to-end = test_cli. Board building and raw peeks live in
+tests/boards.py (importable under bare pytest via tests/__init__.py).
 
 Skeleton state: every test below the pure tier raises
 NotImplementedError until its module lands (ARCHITECTURE §13); the
@@ -17,7 +18,8 @@ sqlite3 ':memory:'.
 
 import pytest
 
-NOW = 1_700_000_000  # fixed clock for deterministic tests
+from dibs import transitions
+from tests.boards import ELEPHANT, OTTER, build_board
 
 # Exercises every SSoT §8 recognition rule: two sections, bodies,
 # nested children (one bodiless - a verify-warning case), a hand [x],
@@ -64,9 +66,9 @@ def board(tmp_path, plan_text):
     tmp_path/'.plan.md.dibs' + ensure_schema; seed tasks from
     planfile.parse_plan; return Context(conn, plan, db, None, NOW).
     """
-    raise NotImplementedError(
-        'needs store + planfile (ARCHITECTURE §13 steps 2-3)',
-    )
+    ctx = build_board(tmp_path, plan_text)
+    yield ctx
+    ctx.conn.close()
 
 
 @pytest.fixture
@@ -77,6 +79,12 @@ def two_agents(board):
     transitions.register_agent (never raw INSERT - I1 applies to test
     setup too).
     """
-    raise NotImplementedError(
-        'needs transitions.register_agent (ARCHITECTURE §13 step 4)',
-    )
+    for agent in (OTTER, ELEPHANT):
+        assert transitions.register_agent(board.conn, agent)
+    return (OTTER, ELEPHANT)
+
+
+@pytest.fixture
+def make_board():
+    """Board factory for purpose-built plans: make_board(root, text)."""
+    return build_board
