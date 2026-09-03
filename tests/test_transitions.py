@@ -312,21 +312,6 @@ def test_record_note_broadcast_and_directed(board, two_agents):
     assert logged == [shout.event_id, whisper.event_id, stray.event_id]
 
 
-def test_import_author_done_owner_human(board):
-    """SSoT §8: a hand-checked [x] imports as done with owner 'human'
-    (the fixture's own [x], A3, came through this path at build time)."""
-    task = transitions.import_author_done(board.conn, NOW, 'A1')
-    assert (task.status, task.owner) == (Status.DONE, 'human')
-    assert (task.done_at, task.done_note) == (NOW, None)
-    events = [
-        (row['agent'], row['task_id'])
-        for row in peek_events(board, EventKind.DONE.value)
-    ]
-    assert events == [('human', 'A3'), ('human', 'A1')]
-    assert transitions.import_author_done(board.conn, NOW, 'A1') is None
-    assert transitions.import_author_done(board.conn, NOW, 'A3') is None
-
-
 def test_register_agent_false_on_collision(board):
     """I1: second INSERT of the same name returns False via UNIQUE -
     no SELECT-then-INSERT anywhere. The join event and the agent row

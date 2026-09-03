@@ -1,19 +1,17 @@
 """Test-side board building and raw peeks (ARCHITECTURE §11 fixtures).
 
-Boards are seeded through production code: the rows are
-planfile.compute_sync(parse_plan(text), ()).rows - exactly what init
-inserts (D24) - and hand-checked lines are imported through
-transitions.import_author_done. The raw INSERT below is the one
-sanctioned stand-in until plansync.apply_sync lands and takes both over
-(§13 step 7). The reads are assertion peeks only; production reads live
-in queries.py.
+Boards are seeded through production code: plansync.apply_sync on an
+empty board, which is what init does minus founding the key (D24) - the
+fixture stays unfounded so found_board can be exercised from its first
+call. `settle`/`init_rows` are the pure tier's model of the same apply.
+The reads are assertion peeks only; production reads live in queries.py.
 """
 
 import dataclasses
 import sqlite3
 from pathlib import Path
 
-from dibs import planfile, store, transitions
+from dibs import planfile, plansync, store
 from dibs.records import Agent, Status, Task
 from dibs.runtime import Context
 
@@ -21,7 +19,6 @@ NOW = 1_700_000_000  # fixed clock for deterministic tests
 OTTER = Agent(agent_id='brave-otter-1111', name='brave-otter')
 ELEPHANT = Agent(agent_id='happy-elephant-2222', name='happy-elephant')
 
-INSERT_TASK = 'INSERT INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
 OPEN = (Status.TODO.value, Status.DOING.value)
 
 
@@ -42,7 +39,7 @@ def settle(
         by_id[ticked] = dataclasses.replace(
             by_id[ticked],
             status=Status.DONE,
-            owner=transitions.HUMAN,
+            owner=plansync.HUMAN,
             done_at=NOW,
         )
     return tuple(by_id.values())
@@ -61,13 +58,9 @@ def build_board(root: Path, text: str) -> Context:
     db_path = root / '.plan.md.dibs'
     conn = store.connect(db_path)
     store.ensure_schema(conn)
-    plan = planfile.compute_sync(planfile.parse_plan(text), ())
-    with conn:
-        conn.executemany(
-            INSERT_TASK, [dataclasses.astuple(task) for task in plan.rows],
-        )
-    for task_id in plan.checked:
-        transitions.import_author_done(conn, NOW, task_id)
+    plansync.apply_sync(
+        conn, NOW, planfile.parse_plan(text), plan_path.stat().st_mtime_ns,
+    )
     return Context(conn, plan_path, db_path, None, NOW)
 
 
@@ -86,6 +79,13 @@ def orphan(ctx: Context, *task_ids: str) -> None:
             "UPDATE tasks SET status = 'orphaned' WHERE id = ?",
             [(task_id,) for task_id in task_ids],
         )
+
+
+def peek_meta(ctx: Context, key: str) -> str:
+    """One meta value as stored (TEXT)."""
+    return ctx.conn.execute(
+        'SELECT value FROM meta WHERE key = ?', (key,),
+    ).fetchone()[0]
 
 
 def peek_task(ctx: Context, task_id: str) -> sqlite3.Row:

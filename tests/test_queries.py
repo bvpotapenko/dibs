@@ -164,7 +164,9 @@ def test_board_snapshot_carries_meta_and_events(board):
             board.conn, OTTER.agent_id, NOW + number, f'note {number}',
         )
     snapshot = queries.board_snapshot(board.conn)
-    assert (snapshot.key, snapshot.max_hand, snapshot.plan_mtime) == ('', 3, 0)
+    assert (snapshot.key, snapshot.max_hand, snapshot.plan_mtime) == (
+        '', 3, board.plan_path.stat().st_mtime_ns,
+    )
     assert len(snapshot.events) == EVENT_CAP
     last = NOTES - 1
     assert snapshot.events[-1].text == f'note {last}'

@@ -4,9 +4,7 @@ Success is judged by rowcount alone (I1, C3) and appends exactly one
 event per changed row in the same transaction (I6). Branching lives in
 the WHERE clause; Python stays linear (C9). Level L2 (imports L0-L1).
 
-Member budget 6 (ARCHITECTURE §3). import_author_done is a seventh, at
-the WPS cap, only until §13 step 7 moves its case into
-plansync.apply_sync; never raise the limit.
+Member budget 6 (ARCHITECTURE §3); never raise the limit.
 
 Rows come back as sqlite3.Row (store.connect); `RETURNING *` and
 `SELECT *` follow the DDL column order, which mirrors records.Task and
@@ -24,7 +22,6 @@ from operator import itemgetter
 from dibs.records import Agent, Event, EventKind, Status, Task
 
 REAP_TTL_SECONDS = 2700  # 45 minutes (SSoT §13); D9 passive reaping
-HUMAN = 'human'  # the plan author as an actor (SSoT §5, §8)
 SYSTEM = 'system'  # the reaper as an actor (SSoT §5, D9)
 # Take the write lock up front so contention waits on busy_timeout
 # instead of failing mid-transaction (D2).
@@ -78,13 +75,6 @@ RETURNING *
 RELEASE_SQL = """
 UPDATE tasks SET status = 'todo', owner = NULL, claimed_at = NULL
 WHERE id = ?1 AND owner = ?2 AND status = 'doing'
-RETURNING *
-"""
-
-# ?1 now  ?2 task_id
-IMPORT_SQL = """
-UPDATE tasks SET status = 'done', owner = 'human', done_at = ?1
-WHERE id = ?2 AND status = 'todo'
 RETURNING *
 """
 
@@ -287,27 +277,6 @@ def record_note(
         row = conn.execute(EVENT_BY_ID_SQL, (cursor.lastrowid,)).fetchone()
     event = Event(*row)
     return replace(event, kind=EventKind(event.kind))
-
-
-def import_author_done(
-    conn: sqlite3.Connection,
-    now: int,
-    task_id: str,
-) -> Task | None:
-    """Import a hand-checked [x] as done by 'human' during sync (SSoT §8).
-
-    None on zero rows (the task is no longer todo): sync reports it.
-    """
-    with conn:
-        conn.execute(BEGIN)
-        row = conn.execute(IMPORT_SQL, (now, task_id)).fetchone()
-        if row is None:
-            return None
-        conn.execute(
-            EVENT_SQL, (now, HUMAN, EventKind.DONE.value, task_id, None, ''),
-        )
-    task = Task(*row)
-    return replace(task, status=Status(task.status))
 
 
 def register_agent(conn: sqlite3.Connection, agent: Agent, now: int) -> bool:
