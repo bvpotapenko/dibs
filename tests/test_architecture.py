@@ -10,6 +10,7 @@ tokens touch, the rows docstrings occupy, and the SSoT §2 code lines.
 """
 
 import ast
+import io
 import tokenize
 from pathlib import Path
 from types import MappingProxyType
@@ -77,7 +78,10 @@ def members_of(path: Path) -> int:
 
     MEMBER_NODES over ast.parse(path.read_text()).body, nothing deeper.
     """
-    raise NotImplementedError('ARCHITECTURE §13 step 15: members_of')
+    tree = ast.parse(path.read_text())
+    return len([
+        node for node in tree.body if isinstance(node, MEMBER_NODES)
+    ])
 
 
 def import_edges(path: Path) -> tuple[tuple[str, str], ...]:
@@ -89,7 +93,15 @@ def import_edges(path: Path) -> tuple[tuple[str, str], ...]:
     then one two-`for` comprehension over them, filtered on
     node.module.startswith(PACKAGE.name), and their aliases (WPS224/307).
     """
-    raise NotImplementedError('ARCHITECTURE §13 step 15: import_edges')
+    tree = ast.parse(path.read_text())
+    importer = path.relative_to(PACKAGE).with_suffix('').parts[0]
+    froms = [node for node in tree.body if isinstance(node, ast.ImportFrom)]
+    return tuple(
+        (importer, imported_key(node, alias))
+        for node in froms
+        if node.module.startswith(PACKAGE.name)
+        for alias in node.names
+    )
 
 
 def imported_key(node: ast.ImportFrom, alias: ast.alias) -> str:
@@ -99,7 +111,8 @@ def imported_key(node: ast.ImportFrom, alias: ast.alias) -> str:
     `from dibs import output` -> output, `from dibs.records import Task`
     -> records, `from dibs.verbs import board` -> verbs.
     """
-    raise NotImplementedError('ARCHITECTURE §13 step 15: imported_key')
+    submodule = node.module.partition('.')[2]
+    return (submodule or alias.name).partition('.')[0]
 
 
 def token_lines(source: str) -> set[int]:
@@ -109,7 +122,13 @@ def token_lines(source: str) -> set[int]:
     SKIPPED_TOKENS adds range(start[0], end[0] + 1), so a multi-line
     STRING - a SQL or template body - spans all its rows.
     """
-    raise NotImplementedError('ARCHITECTURE §13 step 15: token_lines')
+    tokens = tokenize.generate_tokens(io.StringIO(source).readline)
+    return {
+        row
+        for token in tokens
+        if token.type not in SKIPPED_TOKENS
+        for row in range(token.start[0], token.end[0] + 1)
+    }
 
 
 def docstring_lines(tree: ast.Module) -> set[int]:
@@ -118,7 +137,15 @@ def docstring_lines(tree: ast.Module) -> set[int]:
     ast.walk; for a DOC_NODES node whose ast.get_docstring is not None,
     the rows of node.body[0] (lineno..end_lineno).
     """
-    raise NotImplementedError('ARCHITECTURE §13 step 15: docstring_lines')
+    documented = [
+        node.body[0] for node in ast.walk(tree)
+        if isinstance(node, DOC_NODES) and ast.get_docstring(node) is not None
+    ]
+    return {
+        row
+        for doc in documented
+        for row in range(doc.lineno, doc.end_lineno + 1)
+    }
 
 
 def code_lines(path: Path) -> int:
@@ -128,14 +155,31 @@ def code_lines(path: Path) -> int:
     is the rows whose text is whitespace: a blank line inside a SQL body
     is still a blank line.
     """
-    raise NotImplementedError('ARCHITECTURE §13 step 15: code_lines')
+    source = path.read_text()
+    blank = {
+        row
+        for row, text in enumerate(source.splitlines(), start=1)
+        if not text.strip()
+    }
+    counted = token_lines(source) - docstring_lines(ast.parse(source)) - blank
+    return len(counted)
 
 
 def test_member_budgets():
     """§3: the set of .py files under dibs/ (posix paths from ROOT) equals
     MEMBER_BUDGETS' keys, and the dict of modules whose members_of exceeds
     its budget is empty - `assert not over` (WPS520)."""
-    raise NotImplementedError('needs tests/test_architecture (§13 step 15)')
+    counts = {
+        path.relative_to(ROOT).as_posix(): members_of(path)
+        for path in PACKAGE.rglob('*.py')
+    }
+    assert counts.keys() == MEMBER_BUDGETS.keys()
+    over = {
+        module: count
+        for module, count in counts.items()
+        if count > MEMBER_BUDGETS[module]
+    }
+    assert not over
 
 
 def test_layering():
@@ -144,7 +188,13 @@ def test_layering():
     never subscript it. __main__ is L6, so the entry's cli edge is
     downward; the dotted `import dibs.x` form is WPS301-banned, so
     ImportFrom is the complete edge set."""
-    raise NotImplementedError('needs tests/test_architecture (§13 step 15)')
+    upward = [
+        (importer, imported)
+        for path in PACKAGE.rglob('*.py')
+        for importer, imported in import_edges(path)
+        if LEVELS[importer] <= LEVELS[imported]
+    ]
+    assert not upward
 
 
 def test_size_budget():
@@ -153,4 +203,7 @@ def test_size_budget():
     (1654 expected at ca34e33 - if the test says otherwise, its counter is
     §2's reference: correct the §2 sentence, never the stop); the file
     count <= FILE_CAP."""
-    raise NotImplementedError('needs tests/test_architecture (§13 step 15)')
+    modules = sorted(PACKAGE.rglob('*.py'))
+    total = sum(code_lines(path) for path in modules)
+    assert total <= HARD_STOP, f'{total} code lines, stop {HARD_STOP}'
+    assert len(modules) <= FILE_CAP

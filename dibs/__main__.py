@@ -1,4 +1,4 @@
-"""Entry point for `python -m dibs` (ARCHITECTURE §3, level L5)."""
+"""Entry point for `python -m dibs` (ARCHITECTURE §3, level L6)."""
 
 import sys
 

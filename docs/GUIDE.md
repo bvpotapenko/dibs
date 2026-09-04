@@ -25,12 +25,15 @@ Write `plan.md` as you always would — tasks as checkbox lines, details indente
 
 Then:
 
-1. `dibs verify plan.md` — a dry run that shows the plan exactly as dibs will parse it (sections, task IDs, bodies, warnings for bodiless tasks). It creates and changes nothing; adjust the file until the preview matches your intent.
-2. `dibs init plan.md` — creates the board and prints its key:
+1. `dibs verify plan.md` — a dry run that shows the plan exactly as dibs will parse it: sections, task IDs, the nesting tree, hand-written `[x]` as already done, and inline warnings (`!no body`, `!duplicate title`). It creates and changes nothing; adjust the file until the preview matches your intent.
+2. `dibs init plan.md` — creates the board, prints its key, then the roster `verify` just showed you:
 
 ```
-board created: dibs-7f3a-9c2e   (23 tasks: A1..A23)
-hand to each session:   /dibs dibs-7f3a-9c2e
+board dibs-7f3a-9c2e (23 tasks)
+hand to each session: /dibs dibs-7f3a-9c2e
+## Parser
+A1 todo: Fix date parsing in src/export.py
+…
 ```
 
 Add `--max-hand 3` if workers may hold up to three related tasks at once; the default hand is one.
@@ -63,7 +66,7 @@ Nest a checkbox under another to make it a prerequisite. The parent becomes clai
     - [ ] Create the CsvWriter skeleton (class, __init__, method stubs)
 ```
 
-This is the ordinary outline reading — the big deliverable on top, its parts beneath, the top line finishing last — and it works in either direction: under TDD, nest the implementation beneath its test. Gating is per branch, not per level: `write_csv` unlocks the moment its skeleton is done, whatever the neighbors are doing. Use headings or plain bullets for grouping that has no work of its own; a checkbox is always a task. `verify` and `list` show the tree and what each parent is waiting for; the plan file itself is never marked up with it.
+This is the ordinary outline reading — the big deliverable on top, its parts beneath, the top line finishing last — and it works in either direction: under TDD, nest the implementation beneath its test. Gating is per branch, not per level: `write_csv` unlocks the moment its skeleton is done, whatever the neighbors are doing. Use headings or plain bullets for grouping that has no work of its own; a checkbox is always a task. `verify` and `list` show the tree, each gated parent carrying its child progress (`0/3`); the plan file itself is never marked up with it.
 
 The one shape nesting cannot express is a single shared prerequisite that many tasks wait on. Split it per consumer where that is honest (a skeleton per class rather than one "boilerplate" task), and put genuinely shared setup first in the file — order is priority, though a nudge rather than a gate.
 
@@ -97,11 +100,13 @@ claimed A2: Fix date parsing in src/export.py
   Done = tests in tests/test_export.py pass.
 -- while you were away --
 done A1 by brave-otter: "regex was greedy, anchored it"
+next: dibs done A2 --note "..."
 
 $ dibs done A2 --note "strftime replaced with isoformat"
+next: dibs claim
 ```
 
-Without the environment set, the first `claim` prints your id together with the `export DIBS_AS=<id>` line to run, and every later call takes `--as <your-id>` until you do. Your hand is limited: `claim` refuses while it is full and names what you hold — finish or drop before claiming more. Blocked? `dibs drop A2 --note "why"` and claim something else. Changed something others may depend on? `dibs note "renamed util.load to util.read_cfg"` (`--for <name>` aims it at one agent; a name dibs does not know is refused, and the refusal hands you the broadcast form). If `claim` says nothing is available *yet*, the remaining tasks are waiting on work others hold — that is waiting, not finished: retry after a bit, or stop and report idle. When your `done` unlocks a parent task, the output says so; claim it, since you have the freshest context for it. When `claim` says no tasks remain, stop. Every response — including every error — ends with the exact next command, so a session that lost its context can recover from tool output alone.
+Without the environment set, the first `claim` prints your id together with the `export DIBS_AS=<id>` line to run, and every later call takes `--as <your-id>` until you do. Your hand is limited: `claim` refuses while it is full and names what you hold — finish or drop before claiming more. Blocked? `dibs drop A2 --note "why"` and claim something else. Changed something others may depend on? `dibs note "renamed util.load to util.read_cfg"` (`--for <name>` aims it at one agent; a name dibs does not know is refused, and the refusal hands you the broadcast form). If `claim` says nothing is available *yet*, the remaining tasks are waiting on work others hold — that is waiting, not finished: retry after a bit, or stop and report idle. When your `done` unlocks a parent task, its next line is a ready `dibs claim --task <ID>` for that parent; run it, since you have the freshest context for it. When `claim` says no tasks remain, stop. Every response — including every error — ends with the exact next command, so a session that lost its context can recover from tool output alone.
 
 ## Verbs
 
@@ -127,4 +132,4 @@ A task is held by at most one agent, a hand holds at most `max-hand` tasks (defa
 
 `SSoT.md` holds the decisions and invariants and is authoritative; `ARCHITECTURE.md` is the implementation reference; `skills/dibs/SKILL.md` is the protocol workers load, and `skills/dibs-plan/SKILL.md` the one plan authors load.
 
-Status: every module has landed and the interface above is fixed (SSoT Rev 12); `ARCHITECTURE.md` §13 tracks the remaining amendment steps.
+Status: v1 — every module and every `ARCHITECTURE.md` §13 step has landed (SSoT Rev 12). The member budgets, the layering, and the size ceiling are asserted by `tests/test_architecture.py`, so the next drift is a red test rather than a review finding.
