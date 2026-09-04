@@ -77,6 +77,12 @@ META_DEFAULTS = (
 )
 
 REGISTRY_DIR = Path('~/.local/state/dibs')  # D20; expanduser at use time
+# The board file derives from its plan: errands.md -> .errands.md.dibs,
+# so N plans in one directory get N isolated boards (D2). The glob finds
+# them for the upward walk; WAL siblings (-wal, -shm) do not match it.
+BOARD_FILE = '.{0}.dibs'
+BOARD_GLOB = BOARD_FILE.format('*')
+BOARD_HEAD, BOARD_TAIL = BOARD_FILE.split('{0}')  # a board name's two ends
 
 
 def connect(db_path: Path) -> sqlite3.Connection:

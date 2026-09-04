@@ -1,16 +1,20 @@
 """Multi-line reply bodies: records in, tuple[str, ...] out (C5).
 
 Level L1 (imports L0). Member budget 3 (ARCHITECTURE §3). The envelope
-(events, hint, errors, caps) is output.py's job; bodies never import it.
+(events, hint, errors, caps) is output.py's job; bodies never import it,
+and the one edge to a sibling L1 module is a type-only annotation (§4).
 """
 
 from collections import Counter
 from datetime import datetime, timezone
 from itertools import chain, compress
 from types import MappingProxyType
+from typing import TYPE_CHECKING
 
-from dibs.planfile import SyncPlan
 from dibs.records import Event, Status, Task, agent_name
+
+if TYPE_CHECKING:  # a type-only edge to a sibling L1 module, never a
+    from dibs.planfile import SyncPlan  # runtime import (ARCHITECTURE §4)
 
 SEP = ', '  # list punctuation inside bodies (C5)
 INDENT = '  '  # one nesting level, and a briefing's body (GUIDE)
@@ -27,10 +31,18 @@ STATES = MappingProxyType({  # slot 0: the owner's name (I7)
     Status.DONE: 'done by {0}',
     Status.ORPHANED: 'orphaned',
 })
-YOU_ARE = 'you are {0}'  # D8: the id reminder, by name
+# D8/SSoT §6: the id reminder is the ID - it is the value --as and
+# $DIBS_AS take, and claim output is the owner's own I/O (I7). A worker
+# that minted its identity this invocation is handed the binding to
+# export, D8's preferred flow, as a runnable command (I10).
+YOU_ARE = 'you are {0}'
+BIND = ' - export DIBS_AS={0}'
 CLAIMED = 'claimed {0}: {1}'
 PRIOR = '{0} was previously claimed by {1}, reaped {2} - verify before redoing'
 STAMP = '%Y-%m-%d %H:%M UTC'
+# D21: verify never touches a board, so an existing one is named in
+# one line and the reader is pointed at list (the hint carries it).
+LIVE_BOARD = 'this plan already has a board - the preview is the parse, not it'
 SYNCED = 'synced {0} tasks: {1}'
 FACT = '{0} {1} ({2})'  # count, label, ids
 UNCHANGED = 'nothing changed'
@@ -107,14 +119,16 @@ def format_board(tasks: tuple[Task, ...], key: str) -> tuple[str, ...]:
 
 def format_briefing(
     tasks: tuple[Task, ...],
-    actor_name: str,
+    actor: str,
     priors: tuple[Event, ...],
+    minted: bool = False,
 ) -> tuple[str, ...]:
     """Render claim's briefing: identity, title, indented body, reap history.
 
-    'you are <name>' (D8), then per task 'claimed A2: <title>' with the body
-    indented (D17), then one 'previously claimed by ... reaped ...' line
-    per prior reap event (SSoT §6), its time in UTC.
+    'you are <id>' (D8, SSoT §6 id reminder) - with the export line when
+    this invocation minted the identity - then per task 'claimed A2:
+    <title>' with the body indented (D17), then one 'previously claimed
+    by ... reaped ...' line per prior reap event (SSoT §6), time in UTC.
     """
     briefs = chain.from_iterable(
         (
@@ -124,7 +138,7 @@ def format_briefing(
         for task in tasks
     )
     return (
-        YOU_ARE.format(actor_name),
+        YOU_ARE.format(actor) + BIND.format(actor) * minted,
         *briefs,
         *(
             PRIOR.format(
@@ -139,7 +153,7 @@ def format_briefing(
     )
 
 
-def format_sync(plan: SyncPlan) -> tuple[str, ...]:
+def format_sync(plan: 'SyncPlan') -> tuple[str, ...]:
     """Render sync counts + ids, one warning per regressed id (SSoT §8, §6).
 
     The same text is the SYNC event's body (plansync.apply_sync).

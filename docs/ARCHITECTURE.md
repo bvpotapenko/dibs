@@ -21,7 +21,7 @@ WPS caps module members (default 7), function arguments (5), local variables (5)
 1. Every module has a **member budget ≤ 7**, the WPS cap. A module *at* 7 has no growth room, so §3 names its split seam in advance; needing an 8th member means splitting there by kind, never raising the limit and never parking the member elsewhere.
 2. Functions: ≤ ~10 statements, ≤ 4 parameters (`Context` absorbs the rest), ≤ 5 locals.
 3. **Branching lives in SQL** — WHERE clauses decide, Python reads rowcounts (I1). This is simultaneously the concurrency model and the complexity budget: Python stays linear.
-4. **Data in frozen dataclasses and str-enums; behavior in module functions.** No behavior classes, no inheritance beyond `Enum`, no methods to count.
+4. **Data in frozen dataclasses and str-enums; behavior in module functions.** No behavior classes, no methods to count, no inheritance beyond `Enum` — with one receipted exception: `cli.Parser(ArgumentParser)` overrides `error`, argparse's documented funnel for *every* usage failure, so a malformed invocation becomes `output.steer(BAD_USAGE, …)` like any other refusal (SSoT §6). The receipt is an external contract: on Python 3.10–3.11 no function-shaped hook exists (`exit_on_error=False` misses the required-argument and unrecognized-argument paths), and `error` is the one method argparse guarantees to call. One class, one method, no state.
 5. Repeated short literals (statuses, event kinds, verb names) exist exactly once, as enum members or constants — pre-empts overused-string (WPS226) and magic-number (WPS432) violations.
 6. Module-level collections are immutable: `tuple` / `types.MappingProxyType` (WPS407).
 7. One exception type: `DibsError(message, steer)`. No hierarchy.
@@ -60,7 +60,8 @@ dibs/
 ├── __init__.py     DIBS_VERSION constant only                     [0]  L—
 ├── __main__.py     zipapp/module entry → cli.main()               [0]  L5
 ├── runtime.py      Context, Reply, DibsError                      [3]  L0
-├── records.py      Status, EventKind, Task, Event, Agent, Board   [6]  L0
+├── records.py      Status, EventKind, Task, Event, Agent, Board,
+│                   agent_name                                     [7]* L0
 ├── store.py        connect, ensure_schema, registry_record,
 │                   registry_lookup  (+SCHEMA, PRAGMAS)            [4]  L1
 ├── planfile.py     PlanItem, SyncPlan, parse_plan, compute_sync,
@@ -79,8 +80,8 @@ dibs/
 ├── names.py        mint_identity, mint_board_key
 │                   (+ADJECTIVES, ANIMALS tuples)                  [2]  L3
 ├── cli.py          main, run, open_context, build_parser,
-│                   resolve_actor, resolve_board
-│                   (+VERB_TABLE: MappingProxyType)                [6]  L5
+│                   resolve_board, Parser (argparse's error funnel)
+│                   (+VERB_TABLE, DEFAULTS: MappingProxyType)      [6]  L5
 └── verbs/
     ├── __init__.py empty (WPS bans logic in __init__)             [0]  L—
     ├── work.py     join_session, claim_task, done_task, drop_task [4]  L4
@@ -88,13 +89,13 @@ dibs/
                     verify_board                                   [5]  L4
 ```
 
-\* **At the cap (7), with the split seam named.** `planfile.py`: the md→db half (`PlanItem`, `SyncPlan`, `parse_plan`, `compute_sync`, `mint_id`, `title_hash`) and the db→md half (`annotate_lines`, which would take `LINE_RE` and `LINE_FORMS` with it) — the D4 direction seam. `queries.py`: pipeline reads (`board_snapshot`, `deliver_events`, `verify_actor`) and verb-context reads (`prior_claim`, `resolve_task`, `newly_unlocked`, `claim_refusal`). Neither split is wanted today; each is written down so that an 8th member has exactly one honest move.
+\* **At the cap (7), with the split seam named.** `planfile.py`: the md→db half (`PlanItem`, `SyncPlan`, `parse_plan`, `compute_sync`, `mint_id`, `title_hash`) and the db→md half (`annotate_lines`, which would take `LINE_RE` and `LINE_FORMS` with it) — the D4 direction seam. `queries.py`: pipeline reads (`board_snapshot`, `deliver_events`, `verify_actor`) and verb-context reads (`prior_claim`, `resolve_task`, `newly_unlocked`, `claim_refusal`). `records.py`: rows (`Task`, `Event`, `Agent`, `Board`) and vocabulary (`Status`, `EventKind`, `agent_name`). No split is wanted today; each is written down so that an 8th member has exactly one honest move.
 
-Both modules pass the wps-refactor homogeneity test — every member of `planfile` is a pure text↔record function, every member of `queries` a read returning records — which is why 7 is a budget here and not a debt.
+All three pass the wps-refactor homogeneity test — every member of `planfile` is a pure text↔record function, every member of `queries` a read returning records, every member of `records` a zero-logic row type or the one idiom that names its actor — which is why 7 is a budget here and not a debt. `cli.py` is at 6 with two kinds of member — the pipeline (`main`, `run`, `open_context`) and argv (`build_parser`, `Parser`, `resolve_board`) — so its seam is named too: a 7th member splits argv into `argv.py`, and C1 then reads "cli and argv".
 
-The package sits at 17 files against the SSoT §2 budget of 18. The 18th is the last; the 19th is a stop-and-re-scope flag. `plansync.py` and `views.py` are the two splits §2 predicts along the role seam, made when their concepts arrived (Rev 9) rather than when a counter tripped.
+The package sits at 17 files against the SSoT §2 budget of 18. The 18th is the last; the 19th is a stop-and-re-scope flag. `plansync.py` and `views.py` are the two splits §2 predicts along the role seam, made when their concepts arrived (Rev 9) rather than when a counter tripped. Since Rev 11 the member budgets, the layering table (§4), the file count, and the SSoT §2 line ceiling are asserted by `tests/test_architecture.py` (§11): a budget that drifts fails the suite, not a review.
 
-`list_board`, `task_id`, `agent_id`: builtin shadowing (`list`, `id`) is banned by the naming rules; these are the canonical replacements everywhere. Display names derive from ids by one idiom — `agent_id.rsplit('-', 1)[0]` (SSoT §7 grammar `name-NNNN`) — used at exactly two render sites, `planfile.annotate_lines` and `output.format_event`; a third site would earn `records.agent_name`.
+`list_board`, `task_id`, `agent_id`: builtin shadowing (`list`, `id`) is banned by the naming rules; these are the canonical replacements everywhere. Display names derive from ids by one idiom, `records.agent_name` (`agent_id.rsplit('-', 1)[0]`, the SSoT §7 grammar `name-NNNN`), used at three render sites: `planfile.annotate_lines`, `output.format_event`, `views.format_board`.
 
 ## 4. Layering — allowed import direction
 
@@ -129,6 +130,8 @@ class Agent:   agent_id, name                                    # agent_id = f'
 class Board:   key, max_hand, plan_mtime, tasks, events          # one read of the board (queries.board_snapshot):
                                                                  # meta facts + every task row in seq order + the
                                                                  # last EVENT_CAP events; key '' = founded by nobody yet
+def agent_name(agent_id) -> str                                  # 'happy-elephant-4821' -> 'happy-elephant' (I7); 'human'
+                                                                 # and 'system' pass through; None -> '' (the one idiom, §3)
 
 # runtime.py — execution plumbing. Zero internal imports.
 @dataclass(frozen=True)
@@ -140,7 +143,10 @@ class DibsError(Exception): message: str, steer: str             # steer = liter
 # store.py
 def connect(db_path) -> Connection        # applies PRAGMAS: WAL, busy_timeout=5000, foreign_keys (D2)
 def ensure_schema(conn) -> None           # SSoT §5 tables + meta(key, value): board_key, max_hand, plan_mtime, schema_version
-def registry_record(key, plan_path) -> None   # write-once file in ~/.local/state/dibs/ (D20); self-heal on drift
+def registry_record(key, plan_path) -> None   # key -> absolute plan path under ~/.local/state/dibs/ (D20): a no-op
+                                              # on an empty key (unfounded board) and when the recorded path already
+                                              # matches (read, compare, then write) — so every board command may
+                                              # call it and only drift, i.e. a moved plan, causes a write
 def registry_lookup(key) -> Path | None       # key → absolute plan path, or None if unknown/stale
 
 # planfile.py — PURE: text in, records out. No I/O, no DB, no clock.
@@ -183,7 +189,10 @@ def finish(conn, actor, now, task_id, note) -> Task | None       # WHERE owner=:
                                                                  # rows — the verb raises output.steer(NOT_OWNER, …)
 def release(conn, actor, now, task_id, note) -> Task | None      # drop → todo; same None contract
 def housekeeping(conn, actor, now) -> tuple[Event, ...]          # refresh caller lease, then reap stale by TTL (D9)
-def record_note(conn, actor, now, text, to_name=None) -> Event   # broadcast / directed (D10)
+def record_note(conn, actor, now, text, to_name=None) -> Event | None   # broadcast / directed (D10); the INSERT's
+                                                                 # WHERE requires the audience to exist (agents.name
+                                                                 # or id) or be absent — None ⇔ zero rows, and the
+                                                                 # verb raises steer(UNKNOWN_AUDIENCE, (name, text))
 def register_agent(conn, agent, now) -> bool                     # INSERT + join event stamped `now` (I6 — one clock per
                                                                  # invocation, never the SQLite clock); False on UNIQUE (I1)
 
@@ -195,10 +204,11 @@ def apply_sync(conn, now, plan_items, plan_mtime) -> SyncPlan    # under the wri
                                                                  # UPSERT every row (insert fresh; on conflict refresh only
                                                                  # the text-cached columns) → orphan vanished → stamp
                                                                  # done_at on checked (one done event each; the rows
-                                                                 # already say done by human) →
-                                                                 # one SYNC event carrying the summary → stamp plan_mtime.
-                                                                 # Returns the SyncPlan it applied (facts for views).
-                                                                 # Init IS this on an empty board (D24).
+                                                                 # already say done by human) → one SYNC event carrying
+                                                                 # the summary, ONLY when the diff is non-empty (a
+                                                                 # no-op sync journals nothing, SSoT §8) → stamp
+                                                                 # plan_mtime. Returns the SyncPlan it applied (facts
+                                                                 # for views). Init IS this on an empty board (D24).
 
 # queries.py — reads (deliver_events also advances the cursor: one txn, honest piggyback).
 def board_snapshot(conn) -> Board                                # meta + tasks (seq order) + last EVENT_CAP events
@@ -225,16 +235,26 @@ def mint_board_key() -> str                                      # 'dibs-' + 8 h
 # output.py — the envelope and the steer catalog; owns terseness caps (D14). The ONLY home of error text.
 class Refusal(str, Enum):                                        # every way the board says no; keys of the catalog
     UNKNOWN_TASK, NOT_OWNER, TAKEN, GATED, OVERSIZED, HAND_FULL, WAITING, EMPTY,
-    BOARD_EXISTS, NO_BOARD, MANY_BOARDS, UNKNOWN_ACTOR, OLD_SQLITE
+    UNKNOWN_AUDIENCE,                                            # note --for a name no agent here carries (SSoT §6)
+    BOARD_EXISTS, NO_BOARD, MANY_BOARDS, UNKNOWN_ACTOR,
+    BAD_USAGE,                                                   # (message, verb): the parser's one-line message, the
+                                                                 # verb's canonical form from USAGE (SSoT §6); verb ''
+                                                                 # when no verb parsed → the generic form
+    OLD_SQLITE, DB_ERROR                                         # environment: the floor, and sqlite3.Error (exit 2)
 def render_reply(reply) -> str                                   # lines + events (one line each, capped) + hint; empty
                                                                  # parts vanish, so `join` prints exactly the bare id
 def render_error(err) -> str                                     # "<message>\nRun: <steer>"
 def format_event(event) -> str                                   # one line; agent shown by NAME (I7)
 def next_hint(moment, names) -> str                              # HINTS[moment].format(*names); moments: claim, done,
-                                                                 # unlocked, drop, note, sync, init, list, empty — each a
-                                                                 # runnable command (D14)
+                                                                 # unlocked, drop, note, sync, verify, init, list — each
+                                                                 # a runnable command (D14); no 'empty' moment: EMPTY
+                                                                 # is a refusal, and a refusal carries its own steer
 def steer(kind, names) -> DibsError                              # CATALOG[kind] = (message, command) templates; positional
-                                                                 # slots documented per entry; the one DibsError factory (C7)
+                                                                 # slots documented per entry; the one DibsError factory (C7).
+                                                                 # Two constants word verb-shaped steers: VERB_FORMS (the
+                                                                 # id-taking verbs with the id slot, for UNKNOWN_TASK) and
+                                                                 # USAGE (every verb's canonical runnable form, for
+                                                                 # BAD_USAGE: `dibs done <ID> --note "..."`, `dibs claim`…)
 
 # views.py — multi-line bodies, records in → tuple[str, ...] out. No caps here (output's job), no DB.
 def format_board(tasks, key) -> tuple[str, ...]                  # list AND verify AND init's roster: key header when key
@@ -242,8 +262,13 @@ def format_board(tasks, key) -> tuple[str, ...]                  # list AND veri
                                                                  # progress `2/3` on gated parents (D22); inline warnings —
                                                                  # bodiless (body == ''), duplicate titles (repeated
                                                                  # text_hash) — computed here, not in verbs (C5/C6, D21)
-def format_briefing(tasks, actor_name, priors) -> tuple[str, ...]  # claim: "you are <name>", "claimed A2: <title>", body
-                                                                 # indented, "previously claimed by … reaped …" per prior
+def format_briefing(tasks, actor_id, priors, minted=False) -> tuple[str, ...]
+                                                                 # claim: "you are <id>" (SSoT §6 id reminder, I7: the
+                                                                 # owner's own I/O), with " - export DIBS_AS=<id>" when this
+                                                                 # call minted it (D8), "claimed A2: <title>", body
+                                                                 # indented, "previously claimed by … reaped …" per prior.
+                                                                 # LIVE_BOARD (a constant) is verify's one-line "this plan
+                                                                 # already has a board" (D21)
 def format_sync(plan) -> tuple[str, ...]                         # counts + ids for new/orphaned/imported + regressed
                                                                  # warnings; the same text is the SYNC event's body
 
@@ -255,15 +280,30 @@ def write_trace(path, record) -> None        # append one JSON line, mkdir as ne
 # verbs/*.py — orchestration only: (ctx, args) -> Reply. ≤10 statements each; at most one rowcount `if … raise`.
 def claim_task(ctx, args) -> Reply       # etc. — one function per SSoT §6 verb
 def verify_board(args) -> Reply          # the one pure verb: no ctx (D21) — read, parse, compute_sync(items, ()),
-                                         # views.format_board(plan.rows, ''); if the board file exists, one line → list
+                                         # views.format_board(plan.rows, ''); if the board file exists, one line
+                                         # (views.LIVE_BOARD, selected not formatted) and the hint points to list
+def join_session(ctx, _args) -> Reply    # ctx.actor is None by route (identity-free, D8): Reply is the bare id, no
+                                         # hint, and the settle tail delivers nothing
+def note_verb(ctx, args) -> Reply        # record_note None → its one `if … raise`: steer(UNKNOWN_AUDIENCE, (name, text))
 
 # cli.py — the ONLY process-edge module
-def main(argv=None) -> int               # try: run → print; except DibsError → 1, sqlite3.Error → 2; finally trace (§6)
-def run(args) -> Reply                   # the §6 route table: verify (pure) | init (found + settle) | worker verbs (settle)
-def open_context(args, actor) -> Context # connect + ensure_schema + verify_actor (when actor given) + now
-def build_parser() -> ArgumentParser     # tolerant forms: --task A3 / --task=A3 / positional (D14); global --plan, --as
-def resolve_actor(args) -> str | None    # --as, else $DIBS_AS, else None
-def resolve_board(args) -> tuple[Path, Path]   # (plan, .{plan}.dibs): --plan | $DIBS_BOARD | upward walk;
+def main(argv=None) -> int               # args = Namespace(**DEFAULTS) first, so a parse failure still traces (verb and
+                                         # plan None); try: parse → run → print; except DibsError → 1, sqlite3.Error → 2;
+                                         # finally trace (§6). -h exits 0 through argparse untouched.
+def run(args) -> Reply                   # the §6 route table: verify (pure) | board verbs — open_context with actor None
+                                         # for the identity-free verbs (init, join), args.actor otherwise — then the
+                                         # settle tail
+def open_context(args, actor) -> Context # connect + ensure_schema + verify_actor (when actor given) + registry
+                                         # self-heal + auto-sync (unless the verb is an importer: init, sync) +
+                                         # housekeeping — §6 steps 3-5: what makes a Context ready for a verb
+def build_parser() -> Parser             # tolerant forms: --task A3 / --task=A3 / positional (D14); global --plan and
+                                         # --as, whose defaults are $DIBS_BOARD and $DIBS_AS read at build time (the
+                                         # env fallback lives in the parser, not in a resolver); subparsers are
+                                         # Parser too (parser_class=Parser)
+class Parser(ArgumentParser)             # the one subclass (§1): error(message) raises steer(BAD_USAGE, (message,
+    def error(self, message) -> NoReturn #   verb)) — verb from self.prog ('dibs done' → 'done', 'dibs' → '') — so a
+                                         #   usage error is a refusal with the verb's form, exit 1 (SSoT §6)
+def resolve_board(args) -> tuple[Path, Path]   # (plan, .{plan}.dibs): --plan (already env-backed) | upward walk;
                                                # value may be a board key (store.registry_lookup first, D20)
                                                # or a path; many → MANY_BOARDS steer; none → NO_BOARD (D18); a
                                                # path whose board file is missing → NO_BOARD naming `init` (authors
@@ -272,46 +312,58 @@ def resolve_board(args) -> tuple[Path, Path]   # (plan, .{plan}.dibs): --plan | 
 
 Signature changes against Rev 8, all landed by §13 step 5 before any new module is written: `SyncPlan` reshaped (`rows`, `new` as ids; `reordered`/`reparented` deleted — subsumed by the UPSERT), `mint_id` added, `register_agent(conn, agent, now)`, `mint_identity(conn, now)`, `finish`/`release` documented as `Task | None`, `import_author_done` deleted (its case moves to `plansync.apply_sync`), `board_snapshot` returns `Board`, `resolve_task` takes `verb`, `format_preview` replaced by `views.format_board`, `next_hint(verb, context_bits)` becomes `next_hint(moment, names)`.
 
+Rev 11 changes (§13 steps 13–15, against the landed steps 10–12): `cli.Parser` added and `cli.resolve_actor` deleted (its concept is the parser's `--as` default); `record_note` returns `Event | None`; `apply_sync` journals only a non-empty diff; `registry_record` is drift-only; `Refusal` gains `UNKNOWN_AUDIENCE` and `BAD_USAGE` and `HINTS` loses `empty`. Already landed at steps 10–12 and sanctioned here: `Refusal.DB_ERROR`, `HINTS['verify']`, `format_briefing(…, minted)`, `views.LIVE_BOARD`, `records.agent_name`, and `open_context` owning §6 steps 3–5.
+
 ## 6. Flow of operations — the per-command pipeline
 
 Every invocation runs the same pipeline; verbs never skip steps (C10). Three routes exist, and `cli.run` is the only place that knows which verb takes which — verbs and lower modules never branch on a verb name.
 
 ```
 main(argv):
- 0  sqlite3.sqlite_version_info < (3, 35)          → steer(OLD_SQLITE)   (§1 floor; exit 1, not a "retry")
- 1  build_parser().parse_args()                    → verb + args
+ 0  args = Namespace(**DEFAULTS); now = one clock             the trace's fallback: verb None, plan None
+ 1  build_parser().parse_args(argv)                → verb + args; a usage error is Parser.error →
+                                                     steer(BAD_USAGE, (message, verb)) — a refusal like any
+                                                     other (SSoT §6); -h/--help exits 0 through argparse
     run(args):
+    sqlite3.sqlite_version_info < (3, 35)          → steer(OLD_SQLITE)   (§1 floor; exit 1, not a "retry")
     verify ─► pure route: read plan → parse_plan → compute_sync(items, ()) → views.format_board(rows, '')
-              no board resolution, no DB, no identity, no annotation (D21); board file exists → one line → list
-    init   ─► resolve_board (plan must exist; board file may not) → open_context(args, actor=None)
-              → verb: names.mint_board_key → plansync.found_board (False → steer(BOARD_EXISTS, existing key))
-                      → plansync.apply_sync (the whole plan is `new`, D24) → store.registry_record
-                      → Reply(views.format_board(rows, key) + handoff line, hint)
-              → settle tail below, minus auto-sync (init just imported) and housekeeping (nothing to reap)
-    others ─► 2  resolve_board (D18/D20): --plan | $DIBS_BOARD | upward walk for .*.dibs
-                 value tried as board key (registry) first, then as path; many → MANY_BOARDS; none → NO_BOARD
-              3  open_context: store.connect + ensure_schema; resolve_actor (--as | $DIBS_AS | None);
-                 supplied → queries.verify_actor, unknown → steer(UNKNOWN_ACTOR) (D8); Context.now = one clock
-              4  board = queries.board_snapshot; if plan.stat().st_mtime_ns != board.plan_mtime:
-                 plansync.apply_sync(conn, now, parse_plan(read plan), mtime)      auto-sync (I9), silent — its
-                                                                                   SYNC event is the record
-              5  transitions.housekeeping                                          reap stale + refresh lease (D9, I8)
+              no board resolution, no DB, no identity, no annotation (D21); board file exists → LIVE_BOARD
+              line, hint → list
+    board verbs ─►
+              2  resolve_board (D18/D20): --plan (its default is $DIBS_BOARD) | upward walk for .*.dibs
+                 value tried as board key (registry) first, then as path; many → MANY_BOARDS; none → NO_BOARD;
+                 init needs only the plan, every other verb the board file too
+              3  open_context(args, actor): actor is None for the identity-free verbs — init (the author's
+                 command) and join (mints, never acts; D8) — and args.actor otherwise (--as, default $DIBS_AS);
+                 store.connect + ensure_schema; a supplied actor → queries.verify_actor, unknown →
+                 steer(UNKNOWN_ACTOR) (D8); board = queries.board_snapshot; store.registry_record(board.key,
+                 plan) — the D20 self-heal, a no-op unless the registry drifted; Context.now = one clock
+              4  unless the verb is an importer (init founds and imports; sync IS the import and reports it):
+                 if plan.stat().st_mtime_ns != board.plan_mtime: plansync.apply_sync(conn, now,
+                 parse_plan(read plan), mtime)                                     auto-sync (I9), silent; it
+                                                                                   journals only if something changed
+              5  transitions.housekeeping                                          every board verb, init included
+                                                                                   (a no-op on its empty board):
+                                                                                   reap stale + refresh lease (D9, I8)
               6  VERB_TABLE[verb](ctx, args) → Reply                               verb's own transaction(s) commit here
-    settle tail (init and others):
+    settle tail (every board verb):
               7  queries.deliver_events → Reply.events                             piggyback, cursor advanced (D10);
-                                                                                   actor None → ()
+                                                                                   actor None → () — so join and
+                                                                                   init print no feed
               8  text = read plan; annotated = planfile.annotate_lines(text, board_snapshot().tasks);
-                 if annotated != text: tempfile + os.replace                       (I4; idempotent, so always computed,
+                 if annotated != text: neighbour file + os.replace                 (I4; idempotent, so always computed,
                                                                                    written only on change)
  9  print(output.render_reply(reply)); exit 0
-except DibsError as e:  stderr ← render_error(e);           exit 1   # steered user error (I10)
-except sqlite3.Error:   stderr ← generic + steer "retry";   exit 2   # environment
-finally: if $DIBS_TRACE — trace.write_trace(TraceRecord)             # success AND both error paths; best-effort (D23)
+except DibsError as e:  stderr ← render_error(e);                    exit 1   # every refusal, usage errors included (I10)
+except sqlite3.Error:   stderr ← render_error(steer(DB_ERROR));      exit 2   # environment; the steer says retry
+finally: if $DIBS_TRACE — trace.write_trace(TraceRecord)                      # success AND both error paths; best-effort (D23)
 ```
 
-Notes: a lost claim race is **not** an error — no-arg `claim` auto-picks the next task. A zero-row `claim` is diagnosed by exactly one follow-up read, `queries.claim_refusal`, whose `(Refusal, names)` pair feeds `output.steer` directly: *taken* (bundle member held — names the holder, D6), *gated* (`--task` on a parent with open children — names them, D22), *oversized* (a bundle larger than the hand — names size and hand, offers the first member alone, D6), *hand full* (names held tasks), *waiting* (names who holds what the remaining tasks wait on), *empty*. Correctness rests on the claim statement; the read only words the refusal. `claim` with no identity mints one first (`names.mint_identity`) and the briefing opens with "you are <name>" (D8). `done` follows its transaction with `queries.newly_unlocked` and, if a parent became claimable, its hint is `next_hint('unlocked', (parent_id,))` (D7, D22). `finish`/`release` returning `None` is the verb's one `if … raise` (`steer(NOT_OWNER, (task_id, holder_name))` — the holder comes from the `resolve_task` row read moments earlier). The D23 trace wraps the whole pipeline as a `finally`: parse failures and unresolved boards still produce a line (`verb`/`plan` None), and a trace write failure is swallowed inside `write_trace` — it never touches output or exit codes.
+Notes: a lost claim race is **not** an error — no-arg `claim` auto-picks the next task. A zero-row `claim` is diagnosed by exactly one follow-up read, `queries.claim_refusal`, whose `(Refusal, names)` pair feeds `output.steer` directly: *unknown task* (a member no row carries — nearest id, D14), *taken* (bundle member held — names the holder, D6), *gated* (`--task` on a parent with open children — names them, D22), *oversized* (a bundle larger than the hand — names size and hand, offers the first member alone, D6), *hand full* (names held tasks), *waiting* (names who holds what the remaining tasks wait on), *empty*. Correctness rests on the claim statement; the read only words the refusal. `claim` with no identity mints one first (`names.mint_identity`) and the briefing opens with `you are <id> - export DIBS_AS=<id>` (D8, the id reminder SSoT §6 promises; with a supplied identity the line is `you are <id>` alone). `done` follows its transaction with `queries.newly_unlocked` and, if a parent became claimable, its hint is `next_hint('unlocked', (parent_id,))` (D7, D22). `finish`/`release` returning `None` is the verb's one `if … raise` (`steer(NOT_OWNER, (task_id, holder_name))` — the holder comes from the `resolve_task` row read moments earlier; an empty holder is worded as the row's status, the reaped case). `record_note` returning `None` is `note_verb`'s one `if … raise` (`steer(UNKNOWN_AUDIENCE, (name, text))`, whose command is the same note as a broadcast). The D23 trace wraps the whole pipeline as a `finally`: parse failures and unresolved boards still produce a line (`verb`/`plan` None, from the `DEFAULTS` namespace `main` starts with), and a trace write failure is swallowed inside `write_trace` — it never touches output or exit codes.
 
-Two `run` shapes pass WPS: two guards on `args.verb` (verify, init) ahead of a shared tail, or a `ROUTES` MappingProxyType of three route functions. Either is fine; what is not fine is a per-verb flag record or a stage framework (rapier).
+Why the tool's own annotation write never echoes as a sync: step 8 changes the plan's mtime, so the next command's step 4 re-reads and re-diffs the file — and finds an empty diff, which writes nothing and journals nothing (SSoT §8). The redundant parse is the price of keeping `plan_mtime` a single fact stamped in one place (`apply_sync`); it is milliseconds, and it needs no member.
+
+Two `run` shapes pass WPS: guards on `args.verb` ahead of a shared tail, or a `ROUTES` MappingProxyType of route functions. Either is fine; what is not fine is a per-verb flag record or a stage framework (rapier). The two verb sets `run`/`open_context` consult are constants: `ANONYMOUS = (init, join)` — no caller identity — and `IMPORTERS = (init, sync)` — no auto-sync ahead of the verb.
 
 ## 7. Flow of data
 
@@ -328,13 +380,13 @@ plan.md ────► PlanItem[] ──────────► SyncPlan.ro
 
 ## 8. Contracts (C-rules — cite them in code review)
 
-- **C1** — Process edges (argv, env, stdout/stderr, exit codes, `print`, the SQLite version check) exist only in `cli.py`.
+- **C1** — Process edges (argv, env, stdout/stderr, exit codes, `print`, the SQLite version check) exist only in `cli.py`; env is read once, as the parser's defaults for `--as` and `--plan` and the `DIBS_TRACE` gate.
 - **C2** — SQL text exists only in `store/transitions/plansync/queries`; placeholders only, never string interpolation.
-- **C3** — Every public `transitions` and `plansync` function = one transaction opened with `BEGIN IMMEDIATE`; success ⇔ rowcount says so (I1); exactly one event per mutation, same transaction (I6). A sync is one mutation with one SYNC event; each hand-checked import inside it is its own mutation with its own DONE event.
+- **C3** — Every public `transitions` and `plansync` function = one transaction opened with `BEGIN IMMEDIATE`; success ⇔ rowcount says so (I1); exactly one event per mutation, same transaction (I6). A sync with a non-empty diff is one mutation with one SYNC event; each hand-checked import inside it is its own mutation with its own DONE event; a sync whose diff is empty mutated nothing and journals nothing (SSoT §8) — the SYNC INSERT decides that in its own WHERE, bound to the diff's emptiness.
 - **C4** — `planfile` is pure: no I/O, no DB, no clock. Plan-file reads and the atomic write (`tempfile` + `os.replace`) happen in `cli.run` (steps 4 and 8) and in the `init`/`sync`/`verify` verbs, via `pathlib` — nowhere else.
 - **C5** — All user-facing text lives in `output` (envelope, hints, every error message) and `views` (bodies). Nothing else builds user-facing strings; `DibsError` is constructed only by `output.steer`.
-- **C6** — Verbs orchestrate only: ≤10 statements, no SQL, no regex, no formatting, at most one rowcount `if … raise`.
-- **C7** — One error channel: `raise output.steer(kind, names)`; `cli` catches `DibsError` and `sqlite3.Error` only. Every steer is a runnable command (I10).
+- **C6** — Verbs orchestrate only: ≤10 statements, no SQL, no regex, no formatting, at most one rowcount `if … raise`. Selecting a whole constant line from `views` (`(views.LIVE_BOARD,) * founded`) or mapping `output.format_event` over rows is composition, not formatting; filling a template's slots is formatting and belongs to `views`/`output`.
+- **C7** — One error channel: `raise output.steer(kind, names)`; `cli` catches `DibsError` and `sqlite3.Error` only. Every steer is a runnable command (I10). argparse's usage errors reach the same channel through `cli.Parser.error` (§1), so no path exits with the parser's own text or code.
 - **C8** — No mutable module state anywhere; state flows through `Context` or lives in the DB.
 - **C9** — Decisions branch in SQL, Python reads rowcounts. If a verb grows an if-tree, the WHERE clause is missing something; if a read needs to pick between outcomes, it returns a `Refusal` from a `CASE`.
 - **C10** — Every command runs the §6 pipeline in order; housekeeping precedes the verb so `claim` sees freshly reaped tasks.
@@ -346,12 +398,12 @@ plan.md ────► PlanItem[] ──────────► SyncPlan.ro
 |---|---|---|
 | `init` | names.mint_board_key, plansync.found_board + apply_sync, store.registry_record, views.format_board | §6, §8, D4, D20, D24 |
 | `verify` | planfile (parse + compute_sync against no rows), views.format_board | D21, D22, D24, §8 |
-| `sync` | plansync.apply_sync, views.format_sync | §8, I5, I9, D22, C11 |
-| `join` | names.mint_identity | D8 |
+| `sync` | plansync.apply_sync, views.format_sync — the pipeline's auto-sync stands down for it (an importer) | §8, I5, I9, D22, C11 |
+| `join` | names.mint_identity; identity-free by route (actor None), so the reply is the bare id and the settle tail delivers nothing | D8 |
 | `claim` | names.mint_identity (fallback), transitions.claim, queries.claim_refusal / prior_claim, views.format_briefing | D6, D7, D9, D16, D22, §6 |
 | `done` | queries.resolve_task, transitions.finish, queries.newly_unlocked | D11, I2, I4, D22 |
 | `drop` | queries.resolve_task, transitions.release | §6, D9 |
-| `note` | transitions.record_note | D10 |
+| `note` | transitions.record_note (None → steer UNKNOWN_AUDIENCE, the broadcast form) | D10, §6 |
 | `list` | queries.board_snapshot, views.format_board (child progress `2/3`), Board.events | §6, D14, D22 |
 
 ## 10. WPS pre-satisfaction map
@@ -365,6 +417,8 @@ plan.md ────► PlanItem[] ──────────► SyncPlan.ro
 | Overused strings (WPS226) | `Status`/`EventKind` enums; verb names only in `VERB_TABLE`; long SQL strings are unique literals, inherently safe |
 | Mutable module constants (WPS407) | tuples + `MappingProxyType` |
 | Nested functions/classes | none — flat module functions only |
+| Imports ≤ 12 (WPS201) | `cli`, the composition root, sits at the cap by role: the seven package modules it wires (§4 L5 imports L0–L4) plus stdlib; a 13th import is the §3 seam firing — split `argv.py`, never a noqa |
+| Subclassing | none beyond `Enum` — except `cli.Parser`, the receipted argparse `error` funnel (§1): one method, no state |
 | Logic in `__init__` (WPS412) | `verbs/__init__.py` is docstring-only; `dibs/__init__.py` holds only `DIBS_VERSION`, which WPS 1.x still counts as logic — sanctioned per-file-ignore (a zipapp has no dist-info to read a version from); `VERB_TABLE` lives in `cli.py` |
 | Docstrings + naming bundle | one-line docstrings on every public member; no builtin shadowing (`list_board`, `task_id`) |
 | `assert` ban (S101) | asserts only under `tests/` per-file-ignore |
@@ -402,8 +456,9 @@ Fixtures in `conftest.py`: `plan_text` (sample document), `board(tmp_path)` (ini
 |---|---|---|
 | Unit (pure) | `planfile`, `names.pick`, `output`, `views` | §8 recognition table incl. nested checkboxes → `parent_line`, indented prose stays body (D22); annotation grammar; hash normalization; **id minting** — letters by first appearance, ordinals never reused (an orphaned `A2` means the next is `A3`), dotted children, a child under a new parent minted in the same pass, letters past `Z`; `SyncPlan.rows` refreshes seq/section/parent/body, passes state through, and carries a hand-checked todo line as done by human; event one-liners; every `Refusal` renders a runnable steer; `format_board` renders tree, `2/3` progress, bodiless/duplicate warnings, and the same text for verify's rows as for a snapshot (D21, D22, D24) |
 | Property / metamorphic | `planfile`, `transitions` | `annotate_lines` preserves every non-grammar byte (I4) across generated docs; **sync is idempotent in one pass**: apply a computed `SyncPlan`, recompute against the settled text → every field empty, no deferral (the Rev 8 "reparented on the second pass" clause is gone with `mint_id`); minted ids are unique across the applied rows and never collide with orphaned ones; claim order respects affinity→seq (D7); **gating invariant:** a parent is never claimable while any todo/doing child exists, across random trees and completion orders (D22) |
-| Integration (tmp DB) | `transitions`, `plansync`, `queries`, `store` | **the CAS race:** two threads claim one task, exactly one wins (I1/I2); bundle all-or-none and must fit the hand (D6); **hand limit:** claim refused at capacity, respawned identity steered back to its held task (D6); **gating:** no-arg claim skips gated parents, explicit `--task` on one is refused naming open children, orphaned children don't block, `claim_refusal` returns each of the six kinds with the right names (D22, D6); `newly_unlocked` fires exactly on the last child's `finish` (D22); `finish` rejects non-owner (I2); TTL reap + lease refresh (D9); `register_agent` UNIQUE retry and join event stamped with `now`; cursor advance (D10); board-key registry record/lookup + self-heal (D20); **plansync:** `found_board` wins once (rowcount, two calls → True/False, one INIT event), `apply_sync` on an empty board inserts every row + imports hand-`[x]` as done by human, a second `apply_sync` on the same text writes nothing but its SYNC event, edits to body/heading/indent/order refresh the cached columns and never a state column, a vanished line orphans, two connections syncing the same edit under `BEGIN IMMEDIATE` converge on one row set (C11) |
-| End-to-end | `cli.main` | full loop init→join→claim→done; init prints the key and `--plan <key>` resolves from an unrelated CWD (D20); auto-sync after a human edit (I9); every refusal exits 1 with a `Run:` line; SQLite below the floor exits 1 with the OLD_SQLITE steer (monkeypatched version tuple); assert final plan.md text and exit codes |
+| Integration (tmp DB) | `transitions`, `plansync`, `queries`, `store` | **the CAS race:** two threads claim one task, exactly one wins (I1/I2); bundle all-or-none and must fit the hand (D6); **hand limit:** claim refused at capacity, respawned identity steered back to its held task (D6); **gating:** no-arg claim skips gated parents, explicit `--task` on one is refused naming open children, orphaned children don't block, `claim_refusal` returns each of the six kinds with the right names (D22, D6); `newly_unlocked` fires exactly on the last child's `finish` (D22); `finish` rejects non-owner (I2); TTL reap + lease refresh (D9); `register_agent` UNIQUE retry and join event stamped with `now`; `record_note` returns None for an unknown audience and logs nothing (an id is accepted as an audience like a name); cursor advance (D10); board-key registry record/lookup + self-heal (D20); **plansync:** `found_board` wins once (rowcount, two calls → True/False, one INIT event), `apply_sync` on an empty board inserts every row + imports hand-`[x]` as done by human, a second `apply_sync` on the same text writes nothing and journals nothing (Rev 11: the SYNC event needs a non-empty diff), edits to body/heading/indent/order refresh the cached columns and never a state column, a vanished line orphans, two connections syncing the same edit under `BEGIN IMMEDIATE` converge on one row set (C11) |
+| End-to-end | `cli.main` | full loop init→join→claim→done; init prints the key and `--plan <key>` resolves from an unrelated CWD (D20); auto-sync after a human edit (I9); every refusal exits 1 with a `Run:` line — a usage error included (`dibs done A3` with no `--note`, an unknown verb: exit 1, the verb's canonical form, no usage dump); `join` with `DIBS_AS` already set prints the bare id and nothing else; `sync` after an edit reports the real diff (the auto-sync stood down); `note --for` an unknown name exits 1 steering to the broadcast form and logs nothing; a second agent's feed after another's `claim` carries no sync line (the annotation write journals nothing); a parse failure still traces with verb None (D23); SQLite below the floor exits 1 with the OLD_SQLITE steer (monkeypatched version tuple); assert final plan.md text and exit codes |
+| Architecture guard | `tests/test_architecture.py` | §3 member budgets per module (AST count of top-level defs and classes; constants free); §4 layering (every `from dibs…` import resolves to a strictly lower level, `TYPE_CHECKING`-guarded ones exempt); SSoT §2: code lines ≤ the hard stop, counted as §2 defines them, and ≤18 package files. The numbers live in the test as one table; changing one is a documented amendment, never a test edit alone |
 
 Definition of done per module: its tests green **and** `flake8` + `ruff` clean. No module is "done" while either fails. Never delete a case to get green: when a member moves (e.g. `import_author_done` → `apply_sync`), its case moves with it.
 
@@ -421,19 +476,22 @@ Staging is load-bearing, not ceremony: `python -m zipapp dibs -m …` fails outr
 
 ## 13. Implementation order (bottom-up; each step ends lint-clean + tests green)
 
-Steps 1–4 are done (Rev 8 shape). Step 5 brings them to the Rev 9 contracts in §5 before any new module is written; from step 6 on, every step is a new module.
+Steps 1–12 are landed (Rev 10 shape, `dist/dibs.pyz` smoke-tested). Steps 13–15 are the Rev 11 amendments: nobody returns to an earlier step — every change to a landed module is a briefing below, and each step ends lint-clean with the whole suite green.
 
 1. ✅ `runtime.py`, `records.py` — types only.
 2. ✅ `store.py` — schema + pragmas + key registry.
 3. ✅ `planfile.py` — parse/annotate/diff; I4 property tests.
 4. ✅ `transitions.py` — CAS claim, race + hand-limit tests, then the rest.
-5. **Rev 9 amendments to 1–4** (one step, one commit): `records.Board`; `planfile.SyncPlan` → `rows/new/vanished/checked/regressed` (delete `reordered`, `reparented`), `planfile.mint_id`, `compute_sync` minting in one pass, docstring deferral clause removed; `transitions.register_agent(conn, agent, now)` (`JOIN_EVENT_SQL`/`AGENT_SQL` take `?3`), `finish`/`release` docstrings state the `None` contract; `tests/boards.py` builds rows from `compute_sync(items, ()).rows` and drops `assign_ids`/`task_rows`; `test_property_planfile` drops its `pair`/`mint_id`/`deferred_by_new_parent` mirrors and asserts one-pass idempotence; `test_planfile` gains the minting cases. `import_author_done` stays until step 7 takes its case.
-6. `queries.py` — `board_snapshot → Board`, `deliver_events` cursor semantics, `resolve_task(conn, raw, verb)`, `claim_refusal` (six kinds; raises need `output.Refusal` + `steer`, so land those two `output` members here, stubs for the rest).
-7. `plansync.py` — `found_board`, `apply_sync` (C11); delete `transitions.import_author_done` and move its test; `tests/boards.build_board` switches to `apply_sync`.
-8. `names.py` — `mint_identity(conn, now)` retry loop + board keys.
-9. `output.py` + `views.py` — envelope, caps, hint and steer catalogs; `format_board`/`format_briefing`/`format_sync`.
-10. `verbs/` — thin orchestration over 5–9; `verify_board(args)` is the one pure verb.
-11. `cli.py`, `__main__.py`, `trace.py` — pipeline §6 with the three routes and the D23 trace; end-to-end + trace tests.
-12. zipapp build; smoke-test `dibs.pyz` on PATH.
+5. ✅ **Rev 9 amendments to 1–4** (one step, one commit): `records.Board`; `planfile.SyncPlan` → `rows/new/vanished/checked/regressed` (delete `reordered`, `reparented`), `planfile.mint_id`, `compute_sync` minting in one pass, docstring deferral clause removed; `transitions.register_agent(conn, agent, now)` (`JOIN_EVENT_SQL`/`AGENT_SQL` take `?3`), `finish`/`release` docstrings state the `None` contract; `tests/boards.py` builds rows from `compute_sync(items, ()).rows` and drops `assign_ids`/`task_rows`; `test_property_planfile` drops its `pair`/`mint_id`/`deferred_by_new_parent` mirrors and asserts one-pass idempotence; `test_planfile` gains the minting cases. `import_author_done` stays until step 7 takes its case.
+6. ✅ `queries.py` — `board_snapshot → Board`, `deliver_events` cursor semantics, `resolve_task(conn, raw, verb)`, `claim_refusal` (six kinds; raises need `output.Refusal` + `steer`, so land those two `output` members here, stubs for the rest).
+7. ✅ `plansync.py` — `found_board`, `apply_sync` (C11); delete `transitions.import_author_done` and move its test; `tests/boards.build_board` switches to `apply_sync`.
+8. ✅ `names.py` — `mint_identity(conn, now)` retry loop + board keys.
+9. ✅ `output.py` + `views.py` — envelope, caps, hint and steer catalogs; `format_board`/`format_briefing`/`format_sync`.
+10. ✅ `verbs/` — thin orchestration over 5–9; `verify_board(args)` is the one pure verb.
+11. ✅ `cli.py`, `__main__.py`, `trace.py` — pipeline §6 with the three routes and the D23 trace; end-to-end + trace tests.
+12. ✅ zipapp build; smoke-test `dibs.pyz` on PATH.
+13. **Rev 11 — the invocation edges (`cli.py`, `output.py`, `verbs/work.py`; one commit).** Make the stubs real: `cli.Parser.error` raises `output.steer(Refusal.BAD_USAGE, (message, verb))` where `verb` is `self.prog.removeprefix(PROG).strip()` — `'done'` for the `dibs done` subparser, `''` for the top parser; `build_parser` returns a `Parser` and passes `parser_class=Parser` to `add_subparsers`; `--plan` and `--as` get `default=os.environ.get(…)` at build time and `resolve_actor` is deleted (`run` and the trace read `args.actor`; `resolve_board` reads `args.plan` only); `DEFAULTS` gains `verb: None` and `actor: None` so `main` can start from `Namespace(**DEFAULTS)` and trace a parse failure; `main` moves `parse_args` inside its `try`. `run`: `ANONYMOUS = (INIT, JOIN)` picks `actor=None`; `open_context` reads the snapshot once, calls `store.registry_record(snapshot.key, plan_path)`, skips the auto-sync for `IMPORTERS = (INIT, SYNC)`, and runs `housekeeping` for every board verb. `output`: `Refusal.UNKNOWN_AUDIENCE` and `Refusal.BAD_USAGE` with catalog entries (`UNKNOWN_AUDIENCE`: `'No agent named {0} on this board - names are the ones events show.'` / `'dibs note "{1}"'`; `BAD_USAGE`: `'{0}'` / the `USAGE` form of `{1}`, falling back to `dibs claim`); the `USAGE` MappingProxyType — every verb's canonical runnable form: `init <plan.md>`, `verify <plan.md>`, `sync`, `join`, `claim`, `done <ID> --note "..."`, `drop <ID>`, `note "..."`, `list`; `steer` selects it for `BAD_USAGE` the way it selects `VERB_FORMS` for `UNKNOWN_TASK`; delete the `empty` hint moment. `store.registry_record` becomes drift-only (empty key → return; recorded path already equal → return). Tests: `test_output` gains sample names for both kinds and drops `empty` from `MOMENTS`; the `test_cli` stubs `test_usage_error_steers_exit_one`, `test_join_ignores_inherited_identity`, `test_sync_verb_reports_the_diff` and the `test_trace` stub `test_trace_parse_failure` go green; `test_store` keeps its three registry cases and gains "re-record of an unchanged path leaves the file's mtime alone". WPS shape notes: `main` keeps five locals (`now`, `args`, `stream`, `text`, `code`); `open_context` binds `ctx` early and reads `ctx.conn`/`ctx.now` (locals `plan_path`, `db_path`, `ctx`, `snapshot`, `edited`).
+14. **Rev 11 — journal hygiene (`plansync.py`, `transitions.py`, `verbs/board.py`; one commit).** `plansync.apply_sync`: the SYNC `INSERT … SELECT … WHERE ?7` (or equivalent) is bound to the diff's emptiness — `bool(plan.new or plan.vanished or plan.checked or plan.regressed)` — so a no-op sync journals nothing (C3, SSoT §8); `plan_mtime` is still stamped. `transitions.record_note`: `NOTE_SQL` becomes `INSERT … SELECT … WHERE ?3 IS NULL OR EXISTS (SELECT 1 FROM agents WHERE name = ?3 OR id = ?3)` with `to_agent = (SELECT id FROM agents WHERE name = ?3 OR id = ?3)`; rowcount 0 → `None`, no `EVENT_BY_ID` read. `note_verb`: `if event is None: raise output.steer(Refusal.UNKNOWN_AUDIENCE, (args.to_name, args.text))`. Tests (changed pinned decisions, amended here, never weakened silently): `test_plansync.test_apply_sync_same_text_only_journals` becomes `…_journals_nothing` (event count unchanged, `plan_mtime` stamped); `test_transitions.test_record_note_broadcast_and_directed`'s `stray` case asserts `None` and no NOTE row, and a new case accepts an id as the audience; the `test_cli` stubs `test_note_unknown_name_refused` and `test_tool_writes_never_journal_syncs` go green.
+15. **Rev 11 — the budget as a test (`tests/test_architecture.py`; one commit).** Make the three stubs real: `test_member_budgets` (AST: top-level `FunctionDef`/`ClassDef` per module ≤ the §3 table held in the test as one MappingProxyType, `__init__`/`__main__` at 0), `test_layering` (every `from dibs…` / `import dibs…` edge, `TYPE_CHECKING`-guarded ones excluded, resolves to a strictly lower level per the §4 table, also held in the test), `test_size_budget` (code lines counted as SSoT §2 defines — non-blank, not comment-only, not in a docstring; tokenize + ast — ≤ `HARD_STOP = 1700`; `≤ 18` `.py` files under `dibs/`). Then measure, and write the number into SSoT §2's "Measured at Rev 11" sentence in the same commit. Nothing else changes: this step exists so that the next drift is a red test, not a review finding.
 
-Steps 5–11 are `plan.md`-ready tasks with complete briefings — once step 7 lands, dibs can be dogfooded to build the rest of dibs.
+Every step is a `plan.md`-ready task with a complete briefing — dibs can be dogfooded to build the rest of dibs.

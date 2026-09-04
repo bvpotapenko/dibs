@@ -67,16 +67,18 @@ def test_verify_rows_render_like_a_live_board(plan_text, board):
 
 
 def test_briefing_identity_title_body_priors():
-    """D8/D14/SSoT §6: 'you are <name>', 'claimed A2: <title>', body
-    indented, and one 'previously claimed by ... reaped ...' line per
-    prior reap event, its time in UTC."""
+    """D8/D14/SSoT §6: the id reminder is the ID (the value --as and
+    $DIBS_AS take, I7), then 'claimed A2: <title>', body indented, and one
+    'previously claimed by ... reaped ...' line per prior reap event, its
+    time in UTC. An identity minted this invocation also gets the export
+    line, so a fallback-minted worker can finish what it claims (D8)."""
     prior = Event(
         event_id=9, ts=NOW, agent='system', kind=EventKind.REAP,
         task_id='A1', to_agent=None, text=OTTER.name,
     )
-    lines = format_briefing(init_rows(BRIEF_PLAN), ELEPHANT.name, (prior,))
+    lines = format_briefing(init_rows(BRIEF_PLAN), ELEPHANT.agent_id, (prior,))
     assert lines == (
-        'you are happy-elephant',
+        'you are happy-elephant-2222',
         'claimed A1: Fix it',
         '  Repro: x.',
         '  Done: y.',
@@ -84,7 +86,12 @@ def test_briefing_identity_title_body_priors():
         'A1 was previously claimed by brave-otter, reaped 2023-11-14 22:13 '
         'UTC - verify before redoing',
     )
-    assert format_briefing((), OTTER.name, ()) == ('you are brave-otter',)
+    assert format_briefing((), OTTER.agent_id, ()) == (
+        'you are brave-otter-1111',
+    )
+    assert format_briefing((), OTTER.agent_id, (), minted=True) == (
+        'you are brave-otter-1111 - export DIBS_AS=brave-otter-1111',
+    )
 
 
 def test_sync_summary_counts_and_warnings(plan_text):

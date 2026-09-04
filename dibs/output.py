@@ -8,7 +8,7 @@ Member budget 6 (ARCHITECTURE §3). Bodies live in views.py.
 from enum import Enum
 from types import MappingProxyType
 
-from dibs.records import Event, EventKind, agent_name
+from dibs.records import Event, EventKind, Status, agent_name
 from dibs.runtime import DibsError, Reply
 
 EVENT_CAP = 15  # SSoT §13: unseen events shown before '... and N more'
@@ -17,8 +17,16 @@ SEPARATOR = '-- while you were away --'  # GUIDE: heads the event feed
 OVERFLOW = '... and {0} more - run: dibs list'  # SSoT §13 piggyback cap
 HINT = 'next: {0}'
 RESUME = 'dibs claim'  # the worker loop's default next step (SSoT §10a)
+REVIEW = 'dibs list'  # the human's board view and the lost-key path (D20)
+# NOT_OWNER's slot 1 is the row's state now: a holder's name, or - the
+# common case, a reap that already freed the row (§11) - its status,
+# which a caller reading an unowned row hands over empty.
+UNOWNED = Status.TODO.value
 ERROR = '{0}\nRun: {1}'  # I10: the last line is the command to run
 AUDIENCE = ' to {0}'  # a directed note (D10)
+# D18: several boards are enumerated, one runnable line per board, and
+# the Run: line stays the choice form so none is silently preferred.
+OPTION = 'dibs {0} --plan {1}'
 
 # One line per event kind; slots task, agent, audience, text - every
 # stored text is display-safe (titles, notes, names, key, summary; I7)
@@ -33,6 +41,16 @@ EVENT_LINES = MappingProxyType({
     EventKind.REAP: 'reap {task}: {text} timed out',
 })
 
+# UNKNOWN_TASK steers with the caller's own verb, and the verbs differ
+# in what they require (SSoT §6: done takes a mandatory --note), so the
+# corrected command comes from here, keyed by the verb slot; slot 1 is
+# the nearest id. An unlisted verb falls back to the catalog line (I10).
+VERB_FORMS = MappingProxyType({
+    'claim': 'dibs claim --task {1}',
+    'done': 'dibs done {1} --note "..."',
+    'drop': 'dibs drop {1}',
+})
+
 # The next expected command after each moment, exact syntax (D14, I10)
 HINTS = MappingProxyType({
     'claim': 'dibs done {0} --note "..."',
@@ -40,10 +58,11 @@ HINTS = MappingProxyType({
     'unlocked': 'dibs claim --task {0}',
     'drop': RESUME,
     'note': RESUME,
-    'sync': 'dibs list',
+    'sync': REVIEW,
+    'verify': 'dibs init {0}',
     'init': 'dibs list --plan {0}',
     'list': RESUME,
-    'empty': 'dibs list',
+    'empty': REVIEW,
 })
 
 
@@ -63,20 +82,24 @@ class Refusal(str, Enum):
     MANY_BOARDS = 'many_boards'
     UNKNOWN_ACTOR = 'unknown_actor'
     OLD_SQLITE = 'old_sqlite'
+    DB_ERROR = 'db_error'
 
 
 # Refusal -> (message, command) templates; slots are positional and
 # listed per entry. Every command runs as printed (I10); '...' and
 # <angle brackets> mark the one value only the reader can supply.
 CATALOG = MappingProxyType({
-    # (raw, nearest, verb): the caller's own verb, id corrected (D14)
+    # (raw, nearest, verb): the caller's own verb, id corrected - the
+    # command itself comes from VERB_FORMS[verb], since each verb takes
+    # different mandatory arguments (D14, SSoT §6)
     Refusal.UNKNOWN_TASK: (
         'Unknown task {0} - did you mean {1}?',
-        'dibs {2} {1}',
+        RESUME,
     ),
-    # (task_id, holder name): claim it back, else note and move on (§11)
+    # (task_id, holder name or UNOWNED): claim it back, else note and
+    # move on (§11) - an empty holder means reaping already freed it
     Refusal.NOT_OWNER: (
-        '{0} is not yours - {1} holds it; you were probably reaped.',
+        '{0} is not yours (now {1}) - you were probably reaped.',
         'dibs claim --task {0}',
     ),
     # (member, holder name or status): a bundle is all-or-none (D6)
@@ -110,7 +133,7 @@ CATALOG = MappingProxyType({
     # (): the end state - review is the human's (§11)
     Refusal.EMPTY: (
         'No tasks remain; stop.',
-        'dibs list',
+        REVIEW,
     ),
     # (existing key,): init on a founded board points to sync (SSoT §6)
     Refusal.BOARD_EXISTS: (
@@ -124,10 +147,11 @@ CATALOG = MappingProxyType({
         'dibs init <plan.md>.',
         'dibs {0} --plan <key or plan.md>',
     ),
-    # (verb, boards): enumerate, never guess (D18)
+    # (verb, one board per slot): enumerate, never guess (D18); steer
+    # fills {1} with the joined list and {2} with an OPTION line each
     Refusal.MANY_BOARDS: (
-        'Several boards in scope: {1}. Pick the one matching the plan '
-        'path you were given - never guess.',
+        'Several boards in scope - pick the one matching the plan path '
+        'you were given, never guess:\n{2}',
         'dibs {0} --plan <one of: {1}>',
     ),
     # (actor,): almost always the wrong board - fix the binding (D8, D18)
@@ -135,6 +159,13 @@ CATALOG = MappingProxyType({
         'Identity {0} is unknown on this board - probably the wrong '
         'board; check $DIBS_BOARD against the plan path you were given.',
         'export DIBS_BOARD=<key or plan.md you were given>',
+    ),
+    # (): the board file itself failed - environment, not the caller;
+    # cli exits 2 on this one and the command is worth retrying (§6)
+    Refusal.DB_ERROR: (
+        'The board could not be read or written - another process may '
+        'hold it; run your last command again in a moment.',
+        REVIEW,
     ),
     # (version,): the ARCHITECTURE §1 floor, refused up front
     Refusal.OLD_SQLITE: (
@@ -193,7 +224,23 @@ def steer(kind: Refusal, names: tuple[str, ...] = ()) -> DibsError:
     """Build the one DibsError: catalog (message, command) per kind (C7).
 
     Slots are positional and documented per catalog entry; every command
-    is runnable as printed (I10).
+    is runnable as printed (I10). Three kinds have a slot that words the
+    steer rather than only filling it: UNKNOWN_TASK's verb picks its own
+    command form (`done` carries the --note SSoT §6 makes mandatory),
+    NOT_OWNER's holder is empty exactly when a reap already freed the row
+    - the common case, so it reads as the status (§11) - and MANY_BOARDS
+    takes one board per slot and enumerates each as its own command (D18).
     """
     message, command = CATALOG[kind]
+    if kind is Refusal.UNKNOWN_TASK:
+        command = VERB_FORMS.get(names[2], command)
+    if kind is Refusal.NOT_OWNER:
+        names = (names[0], names[1] or UNOWNED)
+    if kind is Refusal.MANY_BOARDS:
+        boards = names[1:]
+        names = (
+            names[0],
+            LIST_SEP.join(boards),
+            '\n'.join(OPTION.format(names[0], board) for board in boards),
+        )
     return DibsError(message.format(*names), command.format(*names))

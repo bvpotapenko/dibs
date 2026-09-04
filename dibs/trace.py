@@ -8,12 +8,17 @@ module only shapes paths and appends lines. Level L1, stdlib only.
 Member budget 3 (ARCHITECTURE §3).
 """
 
-from dataclasses import dataclass
+import json
+from contextlib import suppress
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 TRACE_DIR = '.logs'  # beside the plan; relative under CWD when unbound
 UNBOUND_STEM = 'unbound'  # filename stem when no board resolved (D23)
 OUTCOME_CAP = 200  # chars of reply/error text kept per trace line
+DAY = '%Y-%m-%d'  # one file per UTC day, from the invocation's own clock
+LINE = '{0}.{1}.jsonl'  # <plan-name>.<UTC date>.jsonl (D23)
 
 
 @dataclass(frozen=True)
@@ -35,9 +40,23 @@ def trace_path(plan_path: Path | None, now: int) -> Path:
     Unbound invocations fall back to the relative
     .logs/unbound.<UTC date>.jsonl so addressing failures stay visible.
     """
-    raise NotImplementedError('ARCHITECTURE §13 step 11: trace.trace_path')
+    day = datetime.fromtimestamp(now, tz=timezone.utc).strftime(DAY)
+    beside = plan_path.parent if plan_path else Path()
+    stem = plan_path.stem if plan_path else UNBOUND_STEM
+    return beside / TRACE_DIR / LINE.format(stem, day)
 
 
 def write_trace(path: Path, record: TraceRecord) -> None:
-    """Append one JSON line, creating .logs/ as needed; never raise (D23)."""
-    raise NotImplementedError('ARCHITECTURE §13 step 11: trace.write_trace')
+    """Append one JSON line, creating .logs/ as needed; never raise (D23).
+
+    Best-effort by contract: a lens that changed behavior would be a
+    ledger. Every failure - unwritable directory, full disk, a path
+    taken by a file - is swallowed here, never above (D23, I6).
+    """
+    line = json.dumps({
+        **asdict(record), 'outcome': record.outcome[:OUTCOME_CAP],
+    })
+    with suppress(OSError):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open('a', encoding='utf-8') as journal:
+            journal.write(f'{line}\n')

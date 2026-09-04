@@ -5,17 +5,19 @@ empty board, which is what init does minus founding the key (D24) - the
 fixture stays unfounded so found_board can be exercised from its first
 call. `settle`/`init_rows` are the pure tier's model of the same apply.
 The reads are assertion peeks only; production reads live in queries.py.
+`run_cli`/`key_of`/`joined` drive cli.main for the end-to-end tier.
 """
 
 import dataclasses
 import sqlite3
 from pathlib import Path
 
-from dibs import planfile, plansync, store
+from dibs import cli, planfile, plansync, store
 from dibs.records import HUMAN, Agent, Status, Task
 from dibs.runtime import Context
 
 NOW = 1_700_000_000  # fixed clock for deterministic tests
+KEY = 'dibs-7f3a-9c2e'  # the key set_max_hand founds the board with (D20)
 OTTER = Agent(agent_id='brave-otter-1111', name='brave-otter')
 ELEPHANT = Agent(agent_id='happy-elephant-2222', name='happy-elephant')
 
@@ -64,21 +66,41 @@ def build_board(root: Path, text: str) -> Context:
     return Context(conn, plan_path, db_path, None, NOW)
 
 
+def resync(ctx: Context, text: str, now: int = NOW) -> planfile.SyncPlan:
+    """Write text to the board's plan and apply it, as the pipeline does.
+
+    The one import path (D24): an edited plan reaches the board through
+    plansync.apply_sync, never through a raw UPDATE (ARCHITECTURE §11).
+    """
+    ctx.plan_path.write_text(text)
+    return plansync.apply_sync(
+        ctx.conn, now, planfile.parse_plan(text),
+        ctx.plan_path.stat().st_mtime_ns,
+    )
+
+
 def set_max_hand(ctx: Context, size: int) -> None:
-    """Widen the per-board hand limit (init --max-hand stand-in, D6)."""
-    with ctx.conn:
-        ctx.conn.execute(
-            "UPDATE meta SET value = ? WHERE key = 'max_hand'", (str(size),),
-        )
+    """Found the board with a wider hand, as `init --max-hand N` does (D6)."""
+    assert plansync.found_board(ctx.conn, NOW, KEY, size)
 
 
-def orphan(ctx: Context, *task_ids: str) -> None:
-    """Mark tasks orphaned as sync would after their lines vanished."""
-    with ctx.conn:
-        ctx.conn.executemany(
-            "UPDATE tasks SET status = 'orphaned' WHERE id = ?",
-            [(task_id,) for task_id in task_ids],
-        )
+def run_cli(capsys, *argv: str) -> tuple[int, str, str]:
+    """Drive one cli.main invocation; return (exit code, stdout, stderr)."""
+    code = cli.main(list(argv))
+    captured = capsys.readouterr()
+    return code, captured.out, captured.err
+
+
+def key_of(printed: str) -> str:
+    """The board key out of init's first line (D20)."""
+    return printed.split('\n')[0].split()[1]
+
+
+def joined(capsys) -> str:
+    """Mint an identity through `join` and return the bare id (D8)."""
+    code, identity, _ = run_cli(capsys, 'join')
+    assert code == cli.EXIT_OK
+    return identity.strip()
 
 
 def peek_meta(ctx: Context, key: str) -> str:

@@ -13,15 +13,21 @@ from tests.boards import (
     NOW,
     held_ids,
     open_children,
-    orphan,
     peek_events,
     peek_task,
+    resync,
     set_max_hand,
     todo_ids,
 )
 
 LATER = NOW + 100
 STALE = NOW + transitions.REAP_TTL_SECONDS + 1  # A1's lease just expired
+# A2's two nested checkboxes, with the body one of them carries (§8).
+CHILDREN = (
+    '  - [ ] Cover multi-byte input\n'
+    '    Body of a child task: paths, symptom, criterion.\n'
+    '  - [ ] Cover the empty file\n'
+)
 
 
 def ids(tasks) -> list[str]:
@@ -158,10 +164,10 @@ def test_claim_gated_parent_names_children(board, two_agents):
     assert peek_task(board, 'A2')['status'] == Status.TODO.value
 
 
-def test_claim_ignores_orphaned_children(board, two_agents):
+def test_claim_ignores_orphaned_children(board, two_agents, plan_text):
     """D22: orphaned children left the plan; they never gate a parent."""
     otter = two_agents[0]
-    orphan(board, 'A2.1', 'A2.2')
+    resync(board, plan_text.replace(CHILDREN, ''))  # both child lines cut
     assert not open_children(board, 'A2')
     got = transitions.claim(board.conn, otter.agent_id, NOW, ('A2',))
     assert ids(got) == ['A2']

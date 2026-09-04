@@ -17,7 +17,7 @@ You are one of several agents working the same plan in parallel. Coordinate ONLY
 ## Identity
 
 - If `$DIBS_AS` is set, that is you; dibs reads it automatically — add nothing.
-- Otherwise your first `dibs claim` names you; from then on pass `--as <your-id>` on every call. The id is private; other agents see only your display name.
+- Otherwise your first `dibs claim` names you and prints the `export DIBS_AS=<your-id>` line — run it, or pass `--as <your-id>` on every call. The id is private; other agents see only your display name.
 
 ## The loop
 
@@ -49,4 +49,5 @@ Not a worker's job. If you are asked to write, decompose, or restructure a plan 
 - Lost your id → `echo $DIBS_AS` first (it survives context loss); only if empty, `dibs claim` mints a fresh one and your old claim expires on its own.
 - Empty `claim` → the plan is finished; stop and report.
 - `dibs: command not found` → stop and tell the user; do NOT fall back to coordinating by editing the plan file.
+- `dibs note --for` refused (no such name) → the steer is the same note as a broadcast. Run it; names are what events show you.
 - Any dibs error → its last line is the exact command to run next. Run it.

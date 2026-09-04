@@ -20,10 +20,11 @@ from dibs.runtime import DibsError, Reply
 from tests.boards import ELEPHANT, NOW, OTTER
 
 MOMENTS = (
-    'claim', 'done', 'unlocked', 'drop', 'note', 'sync', 'init', 'list',
-    'empty',
+    'claim', 'done', 'unlocked', 'drop', 'note', 'sync', 'verify', 'init',
+    'list', 'empty',
 )
 OVERFLOW = 3
+TASK_VERBS = ('claim', 'done', 'drop')  # the verbs taking an ID (SSoT §6)
 
 # One plausible names tuple per Refusal, in the slot order the catalog
 # documents (ARCHITECTURE §5 steer).
@@ -38,9 +39,10 @@ SAMPLE_NAMES = MappingProxyType({
     Refusal.EMPTY: (),
     Refusal.BOARD_EXISTS: ('dibs-7f3a-9c2e',),
     Refusal.NO_BOARD: ('claim',),
-    Refusal.MANY_BOARDS: ('claim', 'errands.md, refactor.md'),
+    Refusal.MANY_BOARDS: ('claim', 'errands.md', 'refactor.md'),
     Refusal.UNKNOWN_ACTOR: ('brave-otter-1111',),
     Refusal.OLD_SQLITE: ('3.31.1',),
+    Refusal.DB_ERROR: (),
 })
 # Steers that are shell rather than dibs commands: the binding to fix
 # (D8/D18) and the interpreter to check (ARCHITECTURE §1 floor).
@@ -152,9 +154,45 @@ def test_steer_every_refusal_is_runnable():
         assert all(name in rendered for name in SAMPLE_NAMES[kind]), kind
 
 
+def test_steer_many_boards_enumerates_boards():
+    """D18/I10: several boards are refused and enumerated, each option its
+    own runnable command; the Run: line keeps the choice form so no board
+    is silently preferred."""
+    err = steer(Refusal.MANY_BOARDS, ('claim', 'errands.md', 'refactor.md'))
+    assert render_error(err).split('\n') == [
+        'Several boards in scope - pick the one matching the plan path '
+        'you were given, never guess:',
+        'dibs claim --plan errands.md',
+        'dibs claim --plan refactor.md',
+        'Run: dibs claim --plan <one of: errands.md, refactor.md>',
+    ]
+
+
+def test_steer_not_owner_words_an_unowned_row():
+    """§11/D14: `done` is rejected most often because a reap already freed
+    the row, so the holder slot arrives empty - the message must still
+    read correctly, and say what the row is now."""
+    reaped = steer(Refusal.NOT_OWNER, ('A1', ''))
+    assert reaped.message == (
+        'A1 is not yours (now todo) - you were probably reaped.'
+    )
+    assert reaped.steer == 'dibs claim --task A1'
+    held = steer(Refusal.NOT_OWNER, ('A1', 'brave-otter'))
+    assert held.message == (
+        'A1 is not yours (now brave-otter) - you were probably reaped.'
+    )
+
+
 def test_steer_unknown_task_is_the_callers_verb():
-    """D14: 'Unknown task B7 - did you mean A7?' steers to the caller's own
-    verb with the id corrected."""
+    """D14/I10: 'Unknown task B7 - did you mean A7?' steers to the caller's
+    own verb with the id corrected, carrying the arguments that verb
+    requires - `done` cannot run without --note (SSoT §6)."""
     err = steer(Refusal.UNKNOWN_TASK, ('B7', 'A7', 'claim'))
     assert err.message == 'Unknown task B7 - did you mean A7?'
-    assert err.steer == 'dibs claim A7'
+    assert err.steer == 'dibs claim --task A7'
+    assert [
+        steer(Refusal.UNKNOWN_TASK, ('B7', 'A7', verb)).steer
+        for verb in TASK_VERBS
+    ] == [
+        'dibs claim --task A7', 'dibs done A7 --note "..."', 'dibs drop A7',
+    ]
