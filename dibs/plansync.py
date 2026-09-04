@@ -57,6 +57,13 @@ IMPORT_EVENTS_SQL = """
 INSERT INTO events (ts, agent, kind, task_id, to_agent, text)
 SELECT ?1, 'human', 'done', value, NULL, '' FROM json_each(?2)
 """
+# ?1 now  ?2 the format_sync summary  ?3 whether the diff changed
+# anything: a sync that mutated nothing journals nothing, and the WHERE
+# is what decides it, not a Python branch (SSoT §8, C3, C9)
+SYNC_EVENT_SQL = """
+INSERT INTO events (ts, agent, kind, task_id, to_agent, text)
+SELECT ?1, 'human', 'sync', NULL, NULL, ?2 WHERE ?3
+"""
 
 
 def found_board(conn: Connection, now: int, key: str, max_hand: int) -> bool:
@@ -88,8 +95,10 @@ def apply_sync(
     Under the lock: board_snapshot -> compute_sync -> UPSERT every row
     (fresh rows inserted whole, matched rows' text-cached columns
     refreshed) -> orphan vanished -> stamp done_at on checked, one DONE
-    event each -> one SYNC event carrying views.format_sync -> stamp
-    plan_mtime. Returns the SyncPlan it applied (C11).
+    event each -> one SYNC event carrying views.format_sync, but only
+    when the diff changed something (a no-op sync journals nothing,
+    SSoT §8) -> stamp plan_mtime, which every sync stamps. Returns the
+    SyncPlan it applied (C11).
     """
     with conn:
         conn.execute(BEGIN)
@@ -100,9 +109,10 @@ def apply_sync(
         conn.execute(ORPHAN_SQL, (json.dumps(plan.vanished),))
         conn.execute(IMPORT_SQL, (now, json.dumps(plan.checked)))
         conn.execute(IMPORT_EVENTS_SQL, (now, json.dumps(plan.checked)))
-        conn.execute(EVENT_SQL, (
-            now, HUMAN, EventKind.SYNC.value, None, None,
+        conn.execute(SYNC_EVENT_SQL, (
+            now,
             '\n'.join(views.format_sync(plan)),
+            bool(plan.new or plan.vanished or plan.checked or plan.regressed),
         ))
         conn.execute(MTIME_SQL, (str(plan_mtime),))
     return plan

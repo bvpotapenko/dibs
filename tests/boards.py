@@ -10,6 +10,7 @@ The reads are assertion peeks only; production reads live in queries.py.
 
 import dataclasses
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from dibs import cli, planfile, plansync, store
@@ -151,6 +152,18 @@ def open_children(ctx: Context, task_id: str) -> tuple[str, ...]:
         (task_id, *OPEN),
     ).fetchall()
     return tuple(row['id'] for row in rows)
+
+
+def peek_syncs(db_path: Path) -> int:
+    """SYNC events on a board reached by path (the end-to-end tier's peek).
+
+    cli.main owns its own connections, so this one opens the file
+    itself; an assertion peek, never a production read (§11).
+    """
+    with closing(sqlite3.connect(db_path)) as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM events WHERE kind = 'sync'",
+        ).fetchone()[0]
 
 
 def peek_cursor(ctx: Context, actor: str) -> int:
