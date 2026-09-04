@@ -1,14 +1,14 @@
 # dibs — guide for coding agents
 
-Status: ARCHITECTURE §13 steps 1-12 landed (every module, the
-pipeline, the trace, `dist/dibs.pyz`). SSoT Rev 11 adds steps 13-15:
-the invocation edges (usage errors steer, `join` is identity-free,
-`sync` is the import), journal hygiene (a no-op sync journals nothing,
-an unknown `--for` name is refused), and the budget as a test. Nobody
-returns to an earlier step: every change to a landed module is a §13
-briefing. Unlanded members exist as stubs raising `NotImplementedError`
-naming their step; their tests are red by design, and the red count
-may only shrink.
+Status: ARCHITECTURE §13 steps 1-14 landed (every module, the
+pipeline, the trace, `dist/dibs.pyz`, the Rev 11 invocation edges and
+journal hygiene). SSoT Rev 12 is precision only. The one open step is
+15, the budget as a test: three red cases in
+`tests/test_architecture.py` over six stubbed measurement helpers.
+Nobody returns to an earlier step: every change to a landed module is
+a §13 briefing. Unlanded members exist as stubs raising
+`NotImplementedError` naming their step; their tests are red by
+design, and the red count may only shrink.
 
 ## Read first (precedence order — higher wins)
 
@@ -55,9 +55,8 @@ may only shrink.
     make build     # stage + zipapp → dist/dibs.pyz
 
 Definition of done per module: its tests green AND lint silent
-(ARCHITECTURE §11). Implementation order: ARCHITECTURE §13 — steps 1-12
-done → 13 invocation edges (cli/output/verbs) → 14 journal hygiene
-(plansync/transitions/note verb) → 15 the budget as a test.
+(ARCHITECTURE §11). Implementation order: ARCHITECTURE §13 — steps 1-14
+done → 15 the budget as a test (`tests/test_architecture.py`).
 
 ## Skeleton conventions
 

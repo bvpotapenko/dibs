@@ -127,4 +127,4 @@ A task is held by at most one agent, a hand holds at most `max-hand` tasks (defa
 
 `SSoT.md` holds the decisions and invariants and is authoritative; `ARCHITECTURE.md` is the implementation reference; `skills/dibs/SKILL.md` is the protocol workers load, and `skills/dibs-plan/SKILL.md` the one plan authors load.
 
-Status: every module has landed and the interface above is fixed (SSoT Rev 11); `ARCHITECTURE.md` §13 tracks the remaining amendment steps.
+Status: every module has landed and the interface above is fixed (SSoT Rev 12); `ARCHITECTURE.md` §13 tracks the remaining amendment steps.
