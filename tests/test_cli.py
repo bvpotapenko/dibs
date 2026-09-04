@@ -5,12 +5,21 @@ pipeline. Drive main(argv) in-process with monkeypatched cwd/env and
 capsys; assert stdout, exit codes, and final plan.md bytes.
 """
 
+from itertools import chain
+
+import pytest
+
 from dibs import cli
+from dibs.output import SEPARATOR
 from tests.boards import joined, key_of, run_cli
 
 ERRANDS = '## Errands\n- [ ] Order the groceries\n  Budget 8000 JPY.\n'
 REFACTOR = '## Code\n- [ ] Split the parser\n  Start at parse_plan.\n'
 GROWN = '- [ ] Write the changelog\n  Summarize the release.\n'
+# Every shape SSoT §6 calls malformed: a missing mandatory argument, an
+# unknown verb, an unrecognized flag.
+MALFORMED = (('done', 'A3'), ('take',), ('claim', '--bogus'))
+QUIET = (cli.EXIT_USER, '')  # a refusal: exit 1, and stdout stays empty
 NAME_PARTS = 3  # adjective-animal-NNNN (SSoT §7)
 
 
@@ -203,28 +212,65 @@ def test_sqlite_error_exits_two(workspace, capsys):
     assert failure.strip().endswith('Run: dibs list')
 
 
-def test_usage_error_steers_exit_one(workspace, capsys):
+@pytest.mark.usefixtures('workspace')
+def test_usage_error_steers_exit_one(capsys):
     """SSoT §6/D14: `dibs done A3` with no --note, `dibs take`, and
     `dibs claim --bogus` each exit EXIT_USER (never argparse's 2), print
     nothing on stdout, and end stderr with the verb's canonical form -
     'Run: dibs done <ID> --note "..."' for done, 'Run: dibs claim' for
     the unknown verb - with no usage dump above the one-line message."""
-    raise NotImplementedError('needs cli.Parser (§13 step 13)')
+    run_cli(capsys, 'init', 'plan.md')
+    refused = [run_cli(capsys, *argv) for argv in MALFORMED]
+    quiet = [(code, printed) for code, printed, _ in refused]
+    steers = [refusal.strip().split('\n') for _, _, refusal in refused]
+    assert quiet == [QUIET, QUIET, QUIET]
+    assert [lines[-1] for lines in steers] == [
+        'Run: dibs done <ID> --note "..."',
+        'Run: dibs claim',
+        'Run: dibs claim',
+    ]
+    assert [len(lines) for lines in steers] == [2, 2, 2]  # no usage dump
+    assert 'usage:' not in ''.join(chain.from_iterable(steers))
+    assert steers[0][0].endswith('--note')  # argparse's own one-liner
 
 
-def test_join_ignores_inherited_identity(workspace, capsys, monkeypatch):
+@pytest.mark.usefixtures('workspace')
+def test_join_ignores_inherited_identity(capsys, monkeypatch):
     """D8: with DIBS_AS already set to a live identity that has unseen
     events, `dibs join` still prints exactly one line - a fresh
     adjective-animal-NNNN id - with no feed and no hint; the inherited
     identity's cursor is untouched (its events arrive on its next call)."""
-    raise NotImplementedError('needs cli.run ANONYMOUS (§13 step 13)')
+    run_cli(capsys, 'init', 'plan.md')
+    inherited = joined(capsys)
+    other = joined(capsys)
+    assert run_cli(capsys, 'claim', '--as', other)[0] == cli.EXIT_OK
+    monkeypatch.setenv(cli.ENV_ACTOR, inherited)
+    code, printed, _ = run_cli(capsys, 'join')
+    minted = printed.strip()
+    assert (code, printed) == (cli.EXIT_OK, f'{minted}\n')  # one bare line
+    assert len(minted.split('-')) == NAME_PARTS and minted != inherited
+    speaker = other.rsplit('-', 1)[0]
+    listed = run_cli(capsys, 'list', '--as', inherited)[1]
+    body, feed = listed.split(SEPARATOR)
+    assert body.startswith('board ') and f'by {speaker}' in feed
 
 
 def test_sync_verb_reports_the_diff(workspace, capsys):
     """SSoT §6: after a human appends a task, `dibs sync` reports
     '1 new (B2)' - the pipeline's auto-sync stood down for the verb - and
     a second `dibs sync` reports 'nothing changed'; exit 0 both times."""
-    raise NotImplementedError('needs cli.open_context IMPORTERS (§13 step 13)')
+    run_cli(capsys, 'init', 'plan.md')
+    plan = workspace / 'plan.md'
+    plan.write_text(plan.read_text() + GROWN)
+    code, synced, _ = run_cli(capsys, 'sync')
+    assert (code, synced.split('\n')[0]) == (
+        cli.EXIT_OK, 'synced 7 tasks: 1 new (B2)',
+    )
+    assert synced.rstrip().endswith('next: dibs list')
+    code, again, _ = run_cli(capsys, 'sync')
+    assert (code, again.split('\n')[0]) == (
+        cli.EXIT_OK, 'synced 7 tasks: nothing changed',
+    )
 
 
 def test_note_unknown_name_refused(workspace, capsys):

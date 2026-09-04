@@ -1,5 +1,6 @@
 """Integration: store bootstrap + key registry on tmp DBs (§11, §13.2)."""
 
+import os
 from contextlib import closing
 from pathlib import Path
 
@@ -8,6 +9,7 @@ from dibs import store
 META_KEYS = ('board_key', 'max_hand', 'plan_mtime', 'schema_version')
 KEY = 'dibs-7f3a-9c2e'
 BUSY_TIMEOUT_MS = 5000  # D2
+STAMPED = 1_700_000_000_000_000_000  # a fixed mtime, so no clock decides
 
 
 def test_connect_applies_pragmas(tmp_path):
@@ -92,3 +94,21 @@ def test_registry_self_heals_on_drift(tmp_path, monkeypatch):
     assert store.registry_lookup(KEY) is None
     store.registry_record(KEY, moved)  # what a --plan <path> command does
     assert store.registry_lookup(KEY) == moved.resolve()
+
+
+def test_registry_record_is_drift_only(tmp_path, monkeypatch):
+    """D20/ARCHITECTURE §5: re-recording an unchanged path leaves the
+    entry's mtime alone, and an unfounded board (empty key) records
+    nothing - which is what lets every board command call it.
+    """
+    monkeypatch.setattr(store, 'REGISTRY_DIR', tmp_path / 'state' / 'dibs')
+    plan = tmp_path / 'plan.md'
+    plan.write_text('- [ ] stay put\n')
+    store.registry_record(KEY, plan)
+    entry = tmp_path / 'state' / 'dibs' / KEY
+    os.utime(entry, ns=(STAMPED, STAMPED))
+    store.registry_record(KEY, plan)
+    assert entry.stat().st_mtime_ns == STAMPED  # no rewrite without drift
+    assert store.registry_lookup(KEY) == plan.resolve()
+    store.registry_record('', plan)  # a board nobody founded yet (D24)
+    assert [path.name for path in entry.parent.iterdir()] == [KEY]

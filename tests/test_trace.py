@@ -108,4 +108,16 @@ def test_trace_parse_failure(workspace, capsys, monkeypatch):
     """D23: with DIBS_TRACE=1, `dibs take` (unknown verb) still appends one
     line - verb None, plan None, exit_code EXIT_USER, argv ['take'] -
     under .logs/unbound.<UTC date>.jsonl, since no board resolved."""
-    raise NotImplementedError('needs cli.main parse inside try (§13 step 13)')
+    monkeypatch.setenv(cli.ENV_TRACE, '1')
+    code, printed, refusal = run_cli(capsys, 'take')
+    unbound = sorted((workspace / trace.TRACE_DIR).glob('unbound.*.jsonl'))
+    tail = refusal.strip().split('\n')[-1]
+    assert (code, printed, tail) == (cli.EXIT_USER, '', 'Run: dibs claim')
+    assert (len(unbound), lines_of(workspace)) == (1, [])  # nothing resolved
+    written = unbound[0].read_text().splitlines()
+    traced = json.loads(written[0])
+    assert (len(written), tuple(traced)) == (1, FIELDS)
+    assert [traced[field] for field in FIELDS[1:6]] == [
+        ['take'], None, None, None, cli.EXIT_USER,
+    ]
+    assert traced['outcome'] == refusal.strip()

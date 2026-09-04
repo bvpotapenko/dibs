@@ -111,14 +111,19 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
 
 
 def registry_record(key: str, plan_path: Path) -> None:
-    """Write key -> absolute plan path once under REGISTRY_DIR (D20).
+    """Write key -> absolute plan path under REGISTRY_DIR on drift (D20).
 
-    The registry is a cache of the board's own meta truth; it self-heals
-    on drift whenever a path-addressed command runs (D20).
+    The registry is a cache of the board's own meta truth, so this
+    writes only when the cache is wrong: a board nobody founded yet has
+    no key to record, and a path already recorded needs no rewrite.
+    That is what lets every board command call it (ARCHITECTURE §6).
     """
+    recorded = plan_path.resolve()
+    if not key or registry_lookup(key) == recorded:
+        return
     registry = REGISTRY_DIR.expanduser()
     registry.mkdir(parents=True, exist_ok=True)
-    (registry / key).write_text(str(plan_path.resolve()))
+    (registry / key).write_text(str(recorded))
 
 
 def registry_lookup(key: str) -> Path | None:

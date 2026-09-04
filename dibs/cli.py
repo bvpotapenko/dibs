@@ -36,10 +36,14 @@ PROG = 'dibs'
 TASK = 'task'  # the id slot every task-taking verb fills (D14)
 INIT = 'init'  # the one verb that founds a board (D20, D24)
 VERIFY = 'verify'  # the one pure verb: no board, no DB, no identity (D21)
+SYNC = 'sync'
+JOIN = 'join'
 CLAIM = 'claim'
 DONE = 'done'
 DROP = 'drop'
 NOTE = 'note'
+ANONYMOUS = (INIT, JOIN)  # no caller identity: the author founds, join mints
+IMPORTERS = (INIT, SYNC)  # the verb IS the import, so no auto-sync ahead of it
 MAX_HAND_DEFAULT = 1  # SSoT §13; init --max-hand overrides per board (D6)
 TEMP_SUFFIX = '.dibs-tmp'  # the annotation's neighbour, replaced in (I4)
 LINE = '{0}\n'  # stdout and stderr both end with one newline (C1)
@@ -47,8 +51,8 @@ LINE = '{0}\n'  # stdout and stderr both end with one newline (C1)
 # verify is absent on purpose: it is the pure route in `run` (D21, §6).
 VERB_TABLE = MappingProxyType({
     INIT: board.init_board,
-    'sync': board.sync_board,
-    'join': work.join_session,
+    SYNC: board.sync_board,
+    JOIN: work.join_session,
     CLAIM: work.claim_task,
     DONE: work.done_task,
     DROP: work.drop_task,
@@ -57,12 +61,16 @@ VERB_TABLE = MappingProxyType({
 })
 VERBS = (*VERB_TABLE, VERIFY)
 
-# Namespace defaults for every verb-specific slot, so each verb reads
-# the same attributes whatever was typed. Subparsers are built with
-# argument_default=SUPPRESS, so an unsupplied argument leaves the value
-# below in place - including one given before the verb (`dibs --plan x
-# claim`), which a plain default would overwrite.
+# The namespace every invocation starts from: one default per
+# verb-specific slot, so each verb reads the same attributes whatever
+# was typed, plus `verb` and `plan_path` for the D23 trace of an
+# invocation that never parsed. `main` hands it to parse_args, which
+# fills it in place - so an unsupplied argument keeps the value below,
+# including one given before the verb (`dibs --plan x claim`), and the
+# flags argparse defaults from the environment (--plan, --as) are
+# absent here on purpose: a slot listed below would shadow them.
 DEFAULTS = MappingProxyType({
+    'verb': None,
     TASK: '',
     NOTE: None,
     'to_name': None,
@@ -118,23 +126,29 @@ class Parser(ArgumentParser):
         `dibs done` subparser, '' for the top parser, so the steer is the
         verb's canonical form from output.USAGE (D14, I10).
         """
-        raise NotImplementedError('ARCHITECTURE §13 step 13: cli.Parser.error')
+        raise output.steer(
+            output.Refusal.BAD_USAGE,
+            (message, self.prog.removeprefix(PROG).strip()),
+        )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the ARCHITECTURE §6 pipeline and return the exit code.
 
     Parse, `run`, write the rendered reply to stdout. DibsError ->
-    stderr + EXIT_USER; sqlite3.Error -> stderr + EXIT_ENV (C7).
-    Finally: with $DIBS_TRACE set, append one TraceRecord line -
-    success and both error paths alike, best-effort, never altering
-    output or exit (D23).
+    stderr + EXIT_USER; sqlite3.Error -> stderr + EXIT_ENV (C7); a
+    malformed invocation is a DibsError too, raised by Parser.error, so
+    parsing happens inside the try - argparse fills the DEFAULTS
+    namespace in place, which is why an invocation that never parsed
+    still has a request to trace (verb and plan None). Finally: with
+    $DIBS_TRACE set, append one TraceRecord line - success and both
+    error paths alike, best-effort, never altering output or exit (D23).
     """
-    args = build_parser().parse_args(argv)
     now = int(time.time())
+    args = Namespace(**DEFAULTS)
     stream, text, code = sys.stdout, '', EXIT_OK
     try:
-        text = output.render_reply(run(args))
+        text = output.render_reply(run(build_parser().parse_args(argv, args)))
     except DibsError as refusal:
         stream, text, code = (
             sys.stderr, output.render_error(refusal), EXIT_USER,
@@ -152,7 +166,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 trace.TraceRecord(
                     ts=now,
                     argv=tuple(argv or sys.argv[1:]),
-                    actor=resolve_actor(args),
+                    actor=args.actor,
                     plan=args.plan_path and args.plan_path.as_posix(),
                     verb=args.verb,
                     exit_code=code,
@@ -170,15 +184,19 @@ def run(args: Namespace) -> Reply:
     a settled Context, runs, and then shares the settle tail: the plan
     is re-annotated through a neighbour file and os.replace when the
     text changed (I4), and the caller's unseen events ride the reply
-    (D10). The SQLite floor is checked here, once, before any board is
-    touched (ARCHITECTURE §1).
+    (D10). The ANONYMOUS verbs carry no caller identity - init is the
+    author's command and join only mints (D8) - so their tail delivers
+    nothing. The SQLite floor is checked here, once, before any board
+    is touched (ARCHITECTURE §1).
     """
     if sqlite3.sqlite_version_info < SQLITE_FLOOR:
         raise output.steer(output.Refusal.OLD_SQLITE, (sqlite3.sqlite_version,))
     if args.verb == VERIFY:
         args.plan_path = Path(args.plan or '')
         return board.verify_board(args)
-    ctx = open_context(args, None if args.verb == INIT else resolve_actor(args))
+    ctx = open_context(
+        args, None if args.verb in ANONYMOUS else args.actor,
+    )
     reply = VERB_TABLE[args.verb](ctx, args)
     text = ctx.plan_path.read_text()
     annotated = planfile.annotate_lines(
@@ -196,42 +214,53 @@ def run(args: Namespace) -> Reply:
 def open_context(args: Namespace, actor: str | None) -> Context:
     """Connect + ensure_schema; verify a supplied actor (D8); stamp now.
 
-    Then settle the board so the verb meets it ready (§6 steps 4-5): a
+    Then settle the board so the verb meets it ready (§6 steps 3-5): the
+    board key's registry entry self-heals when the plan moved (D20), a
     plan edited since the last sync is imported, silently - its SYNC
     event is the record (I9) - and stale claims are reaped before the
-    verb runs, so claim sees them (D9, C10). init skips both: it just
-    created the board and there is nothing to reap.
+    verb runs, so claim sees them (D9, C10). An IMPORTERS verb skips the
+    auto-sync because the verb itself is that import; housekeeping runs
+    for every board verb, a no-op on init's brand-new board.
     """
     plan_path, db_path = resolve_board(args)
-    conn = store.connect(db_path)
-    store.ensure_schema(conn)
-    if actor is not None and not queries.verify_actor(conn, actor):
+    ctx = Context(
+        store.connect(db_path), plan_path, db_path, actor, int(time.time()),
+    )
+    store.ensure_schema(ctx.conn)
+    if actor is not None and not queries.verify_actor(ctx.conn, actor):
         raise output.steer(output.Refusal.UNKNOWN_ACTOR, (actor,))
-    now = int(time.time())
-    if args.verb != INIT:
-        edited = plan_path.stat().st_mtime_ns
-        if edited != queries.board_snapshot(conn).plan_mtime:
-            plansync.apply_sync(
-                conn, now, planfile.parse_plan(plan_path.read_text()), edited,
-            )
-        transitions.housekeeping(conn, actor, now)
-    return Context(conn, plan_path, db_path, actor, now)
+    snapshot = queries.board_snapshot(ctx.conn)
+    store.registry_record(snapshot.key, plan_path)
+    edited = plan_path.stat().st_mtime_ns
+    if args.verb not in IMPORTERS and edited != snapshot.plan_mtime:
+        plansync.apply_sync(
+            ctx.conn, ctx.now, planfile.parse_plan(plan_path.read_text()),
+            edited,
+        )
+    transitions.housekeeping(ctx.conn, actor, ctx.now)
+    return ctx
 
 
-def build_parser() -> ArgumentParser:
+def build_parser() -> Parser:
     """Build the tolerant parser: --task A3 / --task=A3 / positional (D14).
 
     Global flags: --plan (key or path, D18/D20) and --as (D8) sit on
     the top parser and, through SHARED, on every verb, so both `dibs
-    --plan x claim` and `dibs claim --plan x` parse. Every subparser
-    suppresses its own defaults (see DEFAULTS), so an unsupplied flag
-    never overwrites one given before the verb.
+    --plan x claim` and `dibs claim --plan x` parse. Their defaults are
+    the environment, read once and here alone (C1), so nothing below
+    argv ever falls back to it. Every subparser suppresses its own
+    defaults (see DEFAULTS), so an unsupplied flag never overwrites one
+    given before the verb, and every parser is a Parser, whose usage
+    errors steer instead of exiting (§1). The verb-slot defaults are
+    not set here: they ride the namespace `main` passes in, so one
+    mechanism carries them and none can shadow the two above.
     """
-    parser = ArgumentParser(prog=PROG)
-    parser.add_argument('--plan')
-    parser.add_argument('--as', dest='actor')
-    parser.set_defaults(**DEFAULTS)
-    verbs = parser.add_subparsers(dest='verb', required=True)
+    parser = Parser(prog=PROG)
+    parser.add_argument('--plan', default=os.environ.get(ENV_BOARD))
+    parser.add_argument('--as', dest='actor', default=os.environ.get(ENV_ACTOR))
+    verbs = parser.add_subparsers(
+        dest='verb', required=True, parser_class=Parser,
+    )
     made = {
         verb: verbs.add_parser(verb, argument_default=SUPPRESS)
         for verb in VERBS
@@ -244,24 +273,20 @@ def build_parser() -> ArgumentParser:
     return parser
 
 
-def resolve_actor(args: Namespace) -> str | None:
-    """Pick identity: --as, else $DIBS_AS, else None (D8)."""
-    return args.actor or os.environ.get(ENV_ACTOR) or None
-
-
 def resolve_board(args: Namespace) -> tuple[Path, Path]:
     """Resolve (plan path, board path): --plan | $DIBS_BOARD | upward walk.
 
-    A value is tried as a board key via store.registry_lookup first,
-    then as a path (D20); the board file is .<plan-name>.dibs beside
-    the plan (D2). Many boards -> MANY_BOARDS; none -> NO_BOARD (D18);
+    The value is args.plan, whose default is already $DIBS_BOARD
+    (build_parser). It is tried as a board key via store.registry_lookup
+    first, then as a path (D20); the board file is .<plan-name>.dibs
+    beside the plan (D2). Many boards -> MANY_BOARDS; none -> NO_BOARD (D18);
     a path with no board file -> NO_BOARD naming init (authors use
     paths, D20) - except for init itself, which needs only the plan,
     which every verb needs: a plan that is not there steers like a
     board that is not there, never a traceback (I10). The resolved plan
     is recorded on args so the D23 trace names it.
     """
-    given = args.plan or os.environ.get(ENV_BOARD) or ''
+    given = args.plan or ''
     plans = [store.registry_lookup(given) or Path(given)] if given else [
         found.with_name(
             found.name.removeprefix(store.BOARD_HEAD).removesuffix(

@@ -21,7 +21,7 @@ from tests.boards import ELEPHANT, NOW, OTTER
 
 MOMENTS = (
     'claim', 'done', 'unlocked', 'drop', 'note', 'sync', 'verify', 'init',
-    'list', 'empty',
+    'list',
 )
 OVERFLOW = 3
 TASK_VERBS = ('claim', 'done', 'drop')  # the verbs taking an ID (SSoT §6)
@@ -37,10 +37,14 @@ SAMPLE_NAMES = MappingProxyType({
     Refusal.HAND_FULL: ('A2', 'A2', '1'),
     Refusal.WAITING: ('4', 'A3', 'brave-otter'),
     Refusal.EMPTY: (),
+    Refusal.UNKNOWN_AUDIENCE: ('nobody', 'the tokenizer regex moved'),
     Refusal.BOARD_EXISTS: ('dibs-7f3a-9c2e',),
     Refusal.NO_BOARD: ('claim',),
     Refusal.MANY_BOARDS: ('claim', 'errands.md', 'refactor.md'),
     Refusal.UNKNOWN_ACTOR: ('brave-otter-1111',),
+    Refusal.BAD_USAGE: (
+        'the following arguments are required: --note', 'done',
+    ),
     Refusal.OLD_SQLITE: ('3.31.1',),
     Refusal.DB_ERROR: (),
 })
