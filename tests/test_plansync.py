@@ -11,7 +11,14 @@ from contextlib import closing
 from dibs import planfile, plansync, store, transitions, views
 from dibs.records import EventKind
 from dibs.runtime import Context
-from tests.boards import NOW, peek_events, peek_meta, peek_task, peek_tree
+from tests.boards import (
+    NOW,
+    peek_events,
+    peek_meta,
+    peek_task,
+    peek_tree,
+    resync,
+)
 
 KEY = 'dibs-7f3a-9c2e'
 LATER = NOW + 100
@@ -23,15 +30,6 @@ FIX_BLOCK = (
     '  Repro: token count is 12 for fixtures/one.txt, expected 11.\n'
     '  Done: count matches and the regression fixture passes.\n'
 )
-
-
-def resync(ctx, text):
-    """Write text to the fixture's plan and apply it, as the pipeline would."""
-    ctx.plan_path.write_text(text)
-    return plansync.apply_sync(
-        ctx.conn, LATER, planfile.parse_plan(text),
-        ctx.plan_path.stat().st_mtime_ns,
-    )
 
 
 def state_of(ctx):
@@ -102,13 +100,13 @@ def test_apply_sync_imports_hand_checked_as_human(board, plan_text):
         'done', 'human', None, NOW, None,
     )
     edited = plan_text.replace('- [ ] Fix off-by-one', '- [x] Fix off-by-one')
-    assert resync(board, edited).checked == ('A1',)  # A3 not re-imported
+    assert resync(board, edited, LATER).checked == ('A1',)  # A3 not re-imported
     dones = [
         (row['agent'], row['task_id'], row['ts'])
         for row in peek_events(board, EventKind.DONE.value)
     ]
     assert dones == [('human', 'A3', NOW), ('human', 'A1', LATER)]
-    assert resync(board, edited).checked == ()
+    assert resync(board, edited, LATER).checked == ()
     again = peek_events(board, EventKind.DONE.value)
     assert [row['task_id'] for row in again] == ['A3', 'A1']  # no re-import
 
@@ -118,7 +116,7 @@ def test_apply_sync_same_text_only_journals(board, plan_text):
     row and appends exactly one SYNC event carrying format_sync's text (C3)."""
     before = [tuple(row) for row in peek_tree(board)]
     journal = len(peek_events(board))
-    plan = resync(board, plan_text)
+    plan = resync(board, plan_text, LATER)
     assert (plan.new, plan.vanished, plan.checked, plan.regressed) == (
         (), (), (), (),
     )
@@ -145,7 +143,7 @@ def test_apply_sync_refreshes_cached_text_only(board, two_agents, plan_text):
         .replace('token count is 12', 'token count is 13')  # body reworded
         .replace('- [x] Rename Lexer', '  - [x] Rename Lexer')  # under Ship
     )
-    plan = resync(board, edited)
+    plan = resync(board, edited, LATER)
     assert state_of(board) == before
     held = peek_task(board, 'A1')
     first_body_line = held['body'].split('\n')[0]
@@ -165,7 +163,7 @@ def test_apply_sync_orphans_and_reserves_ids(board, plan_text):
     """I5: a removed line -> orphaned (never deleted); a new line in that
     section takes the NEXT ordinal, never the orphan's."""
     retitled = plan_text.replace(FIX_BLOCK, '- [ ] Fix off-by-two\n')
-    plan = resync(board, retitled)
+    plan = resync(board, retitled, LATER)
     assert (plan.vanished, plan.new) == (('A1',), ('A4',))
     assert peek_task(board, 'A1')['status'] == 'orphaned'
     fresh = peek_task(board, 'A4')
@@ -173,7 +171,7 @@ def test_apply_sync_orphans_and_reserves_ids(board, plan_text):
         'Fix off-by-two', 1, 'todo',
     )
     grown = f'{retitled}- [ ] Fix off-by-three\n'  # lands in Docs, not Parser
-    assert resync(board, grown).new == ('B2',)
+    assert resync(board, grown, LATER).new == ('B2',)
     assert sorted(row['id'] for row in peek_tree(board)) == [
         'A1', 'A2', 'A2.1', 'A2.2', 'A3', 'A4', 'B1', 'B2',
     ]

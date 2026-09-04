@@ -27,11 +27,12 @@ REAP_TTL_SECONDS = 2700  # 45 minutes (SSoT §13); D9 passive reaping
 BEGIN = 'BEGIN IMMEDIATE'
 BY_SEQ = itemgetter('seq')
 
-# ?1 actor  ?2 now  ?3 bundle as a JSON array (NULL = take the next
-# available)  ?4 bundle size (1 when ?3 is NULL). Everything is decided
-# here (I1): CAS on status, gating (no open child, D22), all-or-none for
-# a bundle, and the hand limit (D6); ordering is section affinity, then
-# seq (D7). Zero rows is a refusal the verb diagnoses with a read.
+# ?1 actor  ?2 now  ?3 bundle as a JSON array of canonical (upper-cased)
+# ids, NULL = take the next available  ?4 bundle size (1 when ?3 is
+# NULL). Everything is decided here (I1): CAS on status, gating (no open
+# child, D22), all-or-none for a bundle, and the hand limit (D6);
+# ordering is section affinity, then seq (D7). Zero rows is a refusal
+# the verb diagnoses with a read.
 CLAIM_SQL = """
 WITH available AS (
     SELECT id, seq, section FROM tasks AS candidate
@@ -166,11 +167,15 @@ def claim(
     One UPDATE decides everything: CAS on status='todo', hand limit via
     a holdings subquery against meta.max_hand, gating via NOT EXISTS an
     open (todo/doing) child. No-arg order: caller's last section first,
-    then seq (D7). A bundle is all-or-none and must fit the hand.
+    then seq (D7). A bundle is all-or-none and must fit the hand; its
+    members are upper-cased first, so `--task a3` is `--task A3` (D14
+    tolerant forms), exactly as queries.resolve_task tolerates case.
     Zero rows is not an error here; refusal diagnostics (hand full /
     waiting / empty) come from a follow-up read in the verb (D6).
     """
-    bundle = tuple(dict.fromkeys(task_ids or ()))
+    bundle = tuple(dict.fromkeys(
+        task_id.upper() for task_id in task_ids or ()
+    ))
     wanted = json.dumps(bundle) if bundle else None
     with conn:
         conn.execute(BEGIN)

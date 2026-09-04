@@ -7,10 +7,9 @@ integration = test_store / test_transitions / test_queries,
 end-to-end = test_cli. Board building and raw peeks live in
 tests/boards.py (importable under bare pytest via tests/__init__.py).
 
-Skeleton state: every test below the pure tier raises
-NotImplementedError until its module lands (ARCHITECTURE §13); the
-suite is red by design until then. Definition of done per module: its
-tests green AND lint silent.
+Every §13 step has landed, so no case raises NotImplementedError any
+more: the suite is green by contract. Definition of done per module:
+its tests green AND lint silent.
 
 SQLite note: WAL mode needs a real file. Build DBs on tmp_path, never
 sqlite3 ':memory:'.
@@ -18,7 +17,7 @@ sqlite3 ':memory:'.
 
 import pytest
 
-from dibs import transitions
+from dibs import cli, store, transitions
 from tests.boards import ELEPHANT, NOW, OTTER, build_board
 
 # Exercises every SSoT §8 recognition rule: two sections, bodies,
@@ -89,3 +88,20 @@ def two_agents(board):
 def make_board():
     """Board factory for purpose-built plans: make_board(root, text)."""
     return build_board
+
+
+@pytest.fixture
+def workspace(tmp_path, monkeypatch, plan_text):
+    """A tmp CWD holding plan.md, with a private registry and clean env.
+
+    The end-to-end fixture (§13 steps 10-11): the board-key registry
+    (D20) is redirected into tmp_path so no test writes to the
+    developer's ~/.local/state, and the three env bindings start unset
+    so each case states its own (D8, D18, D23).
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(store, 'REGISTRY_DIR', tmp_path / 'registry')
+    for binding in (cli.ENV_ACTOR, cli.ENV_BOARD, cli.ENV_TRACE):
+        monkeypatch.delenv(binding, raising=False)
+    (tmp_path / 'plan.md').write_text(plan_text)
+    return tmp_path

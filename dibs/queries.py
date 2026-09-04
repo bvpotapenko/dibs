@@ -85,13 +85,17 @@ WHERE parent.id = (SELECT parent_id FROM tasks WHERE id = ?1)
   )
 """
 
-# :actor  :bundle (JSON array, NULL = next available)  :size (1 when
-# NULL). Why claim returned zero rows, most specific first, mirroring
-# CLAIM_SQL's WHERE (C9): a member no longer todo, a member with open
-# children, a bundle no hand could take, the hand full, then whether any
-# todo row is left at all.
+# :actor  :bundle (JSON array of canonical ids, NULL = next available)
+# :size (1 when NULL). Why claim returned zero rows, most specific
+# first, mirroring CLAIM_SQL's WHERE (C9): a member no row carries at
+# all, a member no longer todo, a member with open children, a bundle no
+# hand could take, the hand full, then whether any todo row is left.
 REFUSAL_SQL = """
 SELECT CASE
+    WHEN EXISTS (
+        SELECT 1 FROM json_each(:bundle)
+        WHERE value NOT IN (SELECT id FROM tasks)
+    ) THEN 'unknown_task'
     WHEN EXISTS (
         SELECT 1 FROM tasks
         WHERE id IN (SELECT value FROM json_each(:bundle))
@@ -120,7 +124,33 @@ END
 """
 
 # The names each refusal's steer needs, one row each, same bindings plus
-# :sep (output.LIST_SEP) - slot order per output.CATALOG entry.
+# :sep (output.LIST_SEP), :letters and :tail (the NEAREST_SQL ordering) -
+# slot order per output.CATALOG entry.
+# UNKNOWN_TASK: (the first member no row carries, the nearest id to it,
+# 'claim' - claim is the only verb that names members, so its own form
+# is the steer, D14)
+UNKNOWN_SQL = """
+WITH missing AS (
+    SELECT value AS raw FROM json_each(:bundle)
+    WHERE value NOT IN (SELECT id FROM tasks)
+    ORDER BY key
+    LIMIT 1
+)
+SELECT raw,
+       COALESCE((
+           SELECT id FROM tasks
+           ORDER BY (LTRIM(id, :letters) = LTRIM(raw, :letters)) DESC,
+                    (RTRIM(id, :tail) = RTRIM(raw, :tail)) DESC,
+                    ABS(
+                        CAST(LTRIM(id, :letters) AS INTEGER)
+                        - CAST(LTRIM(raw, :letters) AS INTEGER)
+                    ),
+                    seq
+           LIMIT 1
+       ), raw),
+       'claim'
+FROM missing
+"""
 # TAKEN: (member, holder name - 'human' for imports, status if unowned)
 TAKEN_SQL = """
 SELECT tasks.id, COALESCE(agents.name, tasks.owner, tasks.status)
@@ -159,7 +189,7 @@ SELECT (SELECT id FROM gate),
            LIMIT 1
        )
 """
-# OVERSIZED: (bundle size, max_hand, the first member as typed)
+# OVERSIZED: (bundle size, max_hand, the first member, canonical)
 OVERSIZED_SQL = """
 SELECT CAST(:size AS TEXT),
        (SELECT value FROM meta WHERE key = 'max_hand'),
@@ -195,6 +225,7 @@ SELECT CAST((SELECT COUNT(*) FROM tasks WHERE status = 'todo') AS TEXT),
 EMPTY_SQL = 'SELECT NULL LIMIT 0'
 
 NAMES_SQL = MappingProxyType({
+    output.Refusal.UNKNOWN_TASK: UNKNOWN_SQL,
     output.Refusal.TAKEN: TAKEN_SQL,
     output.Refusal.GATED: GATED_SQL,
     output.Refusal.OVERSIZED: OVERSIZED_SQL,
@@ -297,19 +328,25 @@ def claim_refusal(
 ) -> tuple[output.Refusal, tuple[str, ...]]:
     """Explain a zero-row claim: one CASE picks the kind, one read names it.
 
-    Kinds: TAKEN (bundle member held/done - holder), GATED (member waits
-    on children - children), OVERSIZED (bundle larger than the hand -
-    size, hand, first member), HAND_FULL (held ids), WAITING (holders of
-    what remaining todo rows wait on), EMPTY (D6, D22, C9). Both reads
-    share one snapshot, so the names always fit the kind; they feed
-    output.steer(kind, names) verbatim.
+    Kinds: UNKNOWN_TASK (a member no row carries - the member, the
+    nearest id, 'claim'), TAKEN (bundle member held/done - holder),
+    GATED (member waits on children - children), OVERSIZED (bundle
+    larger than the hand - size, hand, first member), HAND_FULL (held
+    ids), WAITING (holders of what remaining todo rows wait on), EMPTY
+    (D6, D14, D22, C9). Members are upper-cased first, as resolve_task
+    tolerates case (SSoT §6). Both reads share one snapshot, so the
+    names always fit the kind; they feed output.steer(kind, names).
     """
-    bundle = tuple(dict.fromkeys(task_ids or ()))
+    bundle = tuple(dict.fromkeys(
+        task_id.upper() for task_id in task_ids or ()
+    ))
     bindings = {
         'actor': actor,
         'bundle': json.dumps(bundle) if bundle else None,
         'size': len(bundle) or 1,
         'sep': output.LIST_SEP,
+        'letters': ascii_uppercase,
+        'tail': ID_TAIL,
     }
     with conn:
         conn.execute(BEGIN_READ)

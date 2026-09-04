@@ -6,12 +6,34 @@ from dibs import queries, transitions
 from dibs.output import EVENT_CAP, Refusal, steer
 from dibs.records import Agent, EventKind, Status
 from dibs.runtime import DibsError
-from tests.boards import NOW, OTTER, peek_cursor, set_max_hand
+from tests.boards import (
+    KEY,
+    NOW,
+    OTTER,
+    peek_cursor,
+    peek_task,
+    resync,
+    set_max_hand,
+)
 
 STALE = NOW + transitions.REAP_TTL_SECONDS + 1
 STALE_AGAIN = STALE + transitions.REAP_TTL_SECONDS + 1
 FOX = Agent(agent_id='calm-fox-3333', name='calm-fox')
 NOTES = 20  # more than EVENT_CAP
+# The fixture's six titles in reverse document order, flat: seq follows
+# the file, so reordering lines is how a human reprioritizes (D7, §8).
+REORDERED = """## Docs
+
+- [~ brave-otter] Update the README quickstart
+
+## Parser
+
+- [x] Rename Lexer to Tokenizer
+- [ ] Cover the empty file
+- [ ] Cover multi-byte input
+- [ ] Ship the tokenizer regression suite
+- [ ] Fix off-by-one in the tokenizer
+"""
 
 
 def refused(ctx, actor, task_ids=None):
@@ -98,18 +120,19 @@ def test_resolve_task_exact_beats_fuzzy(board):
 
 
 def test_resolve_task_miss_steers(board):
-    """I10: a miss raises DibsError whose steer is a runnable claim
-    command naming the nearest id ('did you mean A7?'): the same ordinal
-    in another section first (B2 -> A2), else the same section by
-    ordinal distance (A9 -> A3), else the first task in the plan."""
+    """I10: a miss raises DibsError whose steer is the caller's own verb
+    naming the nearest id ('did you mean A7?'), carrying the arguments
+    that verb requires (SSoT §6: done --note). Nearest is the same
+    ordinal in another section first (B2 -> A2), else the same section
+    by ordinal distance (A9 -> A3), else the first task in the plan."""
     with pytest.raises(DibsError) as caught:
         queries.resolve_task(board.conn, 'B2', 'claim')
     assert 'Unknown task B2' in caught.value.message
     assert 'did you mean A2?' in caught.value.message
-    assert caught.value.steer == 'dibs claim A2'
+    assert caught.value.steer == 'dibs claim --task A2'
     with pytest.raises(DibsError) as caught:
         queries.resolve_task(board.conn, 'A9', 'done')
-    assert caught.value.steer == 'dibs done A3'
+    assert caught.value.steer == 'dibs done A3 --note "..."'
     with pytest.raises(DibsError) as caught:
         queries.resolve_task(board.conn, 'zzz', 'drop')
     assert caught.value.steer == 'dibs drop A1'
@@ -144,9 +167,9 @@ def test_newly_unlocked_last_child_only(board, two_agents):
 
 
 def test_board_snapshot_in_seq_order(board):
-    """§6 list: snapshot follows current seq, not id or insert order."""
-    with board.conn:  # a reorder, as apply_sync will do it (§13 step 7)
-        board.conn.execute('UPDATE tasks SET seq = 10 - seq')
+    """§6 list: snapshot follows current seq, not id or insert order - the
+    human reorders by moving lines, and sync re-caches seq (D7, I5)."""
+    resync(board, REORDERED)
     snapshot = queries.board_snapshot(board.conn)
     assert [task.task_id for task in snapshot.tasks] == [
         'B1', 'A3', 'A2.2', 'A2.1', 'A2', 'A1',
@@ -157,22 +180,39 @@ def test_board_snapshot_in_seq_order(board):
 
 
 def test_board_snapshot_carries_meta_and_events(board):
-    """§5 Board: key '' before init, max_hand from meta, plan_mtime, and
-    the last EVENT_CAP events newest-last."""
-    set_max_hand(board, 3)
+    """§5 Board: the key the board was founded with, max_hand from meta,
+    plan_mtime, and the last EVENT_CAP events newest-last."""
+    set_max_hand(board, 3)  # founds the board, as init --max-hand 3 does
     for number in range(NOTES):
         transitions.record_note(
             board.conn, OTTER.agent_id, NOW + number, f'note {number}',
         )
     snapshot = queries.board_snapshot(board.conn)
     assert (snapshot.key, snapshot.max_hand, snapshot.plan_mtime) == (
-        '', 3, board.plan_path.stat().st_mtime_ns,
+        KEY, 3, board.plan_path.stat().st_mtime_ns,
     )
     assert len(snapshot.events) == EVENT_CAP
     last = NOTES - 1
     assert snapshot.events[-1].text == f'note {last}'
     ids = [event.event_id for event in snapshot.events]
     assert ids == sorted(ids)
+
+
+def test_claim_refusal_unknown_member(board, two_agents):
+    """D14/D6: a member no row carries is an addressing error, not a wait -
+    the refusal names it, suggests the nearest id, and steers with a
+    runnable claim, even beside a member that is free. Members are matched
+    case-insensitively, exactly as resolve_task matches them (SSoT §6)."""
+    otter = two_agents[0]
+    set_max_hand(board, 3)
+    alone = refused(board, otter.agent_id, ('Z9',))
+    beside = refused(board, otter.agent_id, ('A1', 'z9'))
+    assert alone == (Refusal.UNKNOWN_TASK, ('Z9', 'A3', 'claim'))
+    assert beside == alone  # a free A1 does not turn the miss into a wait
+    assert steer(*alone).steer == 'dibs claim --task A3'
+    assert peek_task(board, 'A1')['status'] == Status.TODO.value
+    claimed = transitions.claim(board.conn, otter.agent_id, NOW, ('a1',))
+    assert [task.task_id for task in claimed] == ['A1']
 
 
 def test_claim_refusal_every_kind(board, two_agents):
