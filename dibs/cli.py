@@ -15,9 +15,9 @@ import sys
 import time
 from argparse import SUPPRESS, ArgumentParser, Namespace
 from collections.abc import Sequence
-from dataclasses import replace
 from pathlib import Path
 from types import MappingProxyType
+from typing import NoReturn
 
 from dibs import output, planfile, plansync, queries, store, trace, transitions
 from dibs.runtime import Context, DibsError, Reply
@@ -101,6 +101,26 @@ ARGUMENTS = MappingProxyType({
 })
 
 
+class Parser(ArgumentParser):
+    """The one subclass (ARCHITECTURE §1): a usage error steers, never exits 2.
+
+    argparse funnels every usage failure - missing verb, unknown verb,
+    missing --note, unrecognized flag - through `error`, on every
+    Python dibs supports; overriding it is the only hook that covers
+    them all (§1 receipt). Both the top parser and every subparser are
+    this class (build_parser passes parser_class=Parser).
+    """
+
+    def error(self, message: str) -> NoReturn:
+        """Raise output.steer(BAD_USAGE, (message, verb)) - exit 1 (SSoT §6).
+
+        verb is self.prog.removeprefix(PROG).strip(): 'done' for the
+        `dibs done` subparser, '' for the top parser, so the steer is the
+        verb's canonical form from output.USAGE (D14, I10).
+        """
+        raise NotImplementedError('ARCHITECTURE §13 step 13: cli.Parser.error')
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the ARCHITECTURE §6 pipeline and return the exit code.
 
@@ -168,7 +188,9 @@ def run(args: Namespace) -> Reply:
         neighbour = ctx.plan_path.with_name(ctx.plan_path.name + TEMP_SUFFIX)
         neighbour.write_text(annotated)
         neighbour.replace(ctx.plan_path)
-    return replace(reply, events=queries.deliver_events(ctx.conn, ctx.actor))
+    return Reply(
+        reply.lines, queries.deliver_events(ctx.conn, ctx.actor), reply.hint,
+    )
 
 
 def open_context(args: Namespace, actor: str | None) -> Context:

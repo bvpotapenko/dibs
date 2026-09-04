@@ -102,3 +102,10 @@ def test_trace_failure_never_breaks_command(workspace, capsys, monkeypatch):
     monkeypatch.setenv(cli.ENV_TRACE, '1')
     assert run_cli(capsys, 'verify', 'plan.md') == untraced
     assert (workspace / '.logs').is_file()
+
+
+def test_trace_parse_failure(workspace, capsys, monkeypatch):
+    """D23: with DIBS_TRACE=1, `dibs take` (unknown verb) still appends one
+    line - verb None, plan None, exit_code EXIT_USER, argv ['take'] -
+    under .logs/unbound.<UTC date>.jsonl, since no board resolved."""
+    raise NotImplementedError('needs cli.main parse inside try (§13 step 13)')

@@ -1,10 +1,14 @@
 # dibs — guide for coding agents
 
-Status: ARCHITECTURE §13 steps 1-4 landed (runtime, records, store,
-planfile, transitions); step 5 brings them to the Rev 9 contracts, then
-steps 6-12 land new modules bottom-up. Unlanded members exist as stubs
-raising `NotImplementedError` naming their step; their tests are red by
-design, and the red count may only shrink.
+Status: ARCHITECTURE §13 steps 1-12 landed (every module, the
+pipeline, the trace, `dist/dibs.pyz`). SSoT Rev 11 adds steps 13-15:
+the invocation edges (usage errors steer, `join` is identity-free,
+`sync` is the import), journal hygiene (a no-op sync journals nothing,
+an unknown `--for` name is refused), and the budget as a test. Nobody
+returns to an earlier step: every change to a landed module is a §13
+briefing. Unlanded members exist as stubs raising `NotImplementedError`
+naming their step; their tests are red by design, and the red count
+may only shrink.
 
 ## Read first (precedence order — higher wins)
 
@@ -37,6 +41,11 @@ design, and the red count may only shrink.
   never `strftime('now')` in SQL. SQLite floor 3.35 + JSON (§1).
 - Zero runtime dependencies. Dev tools: flake8 + wemake-python-styleguide,
   ruff, pytest — nothing else.
+- No subclassing beyond `Enum`, except `cli.Parser` overriding argparse's
+  `error` so usage errors are refusals with the verb's form (§1, C7).
+- Size and structure are asserted by `tests/test_architecture.py`
+  (SSoT §2 hard stop 1700 code lines, §3 member budgets, §4 layering);
+  a number in that table changes only with the doc it mirrors.
 
 ## Dev loop
 
@@ -46,9 +55,9 @@ design, and the red count may only shrink.
     make build     # stage + zipapp → dist/dibs.pyz
 
 Definition of done per module: its tests green AND lint silent
-(ARCHITECTURE §11). Implementation order: ARCHITECTURE §13 — steps 1-4
-done → 5 Rev 9 amendments → 6 queries → 7 plansync → 8 names →
-9 output + views → 10 verbs → 11 cli/trace → 12 zipapp.
+(ARCHITECTURE §11). Implementation order: ARCHITECTURE §13 — steps 1-12
+done → 13 invocation edges (cli/output/verbs) → 14 journal hygiene
+(plansync/transitions/note verb) → 15 the budget as a test.
 
 ## Skeleton conventions
 

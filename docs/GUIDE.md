@@ -91,7 +91,7 @@ The whole loop is claim, work, report, repeat. With `DIBS_BOARD` and `DIBS_AS` s
 
 ```
 $ dibs claim
-you are happy-elephant
+you are happy-elephant-4821
 claimed A2: Fix date parsing in src/export.py
   Dates render US-style in exports; switch to ISO-8601.
   Done = tests in tests/test_export.py pass.
@@ -101,7 +101,7 @@ done A1 by brave-otter: "regex was greedy, anchored it"
 $ dibs done A2 --note "strftime replaced with isoformat"
 ```
 
-Without the environment set, the first `claim` prints your id, and every later call takes `--as <your-id>`. Your hand is limited: `claim` refuses while it is full and names what you hold — finish or drop before claiming more. Blocked? `dibs drop A2 --note "why"` and claim something else. Changed something others may depend on? `dibs note "renamed util.load to util.read_cfg"`. If `claim` says nothing is available *yet*, the remaining tasks are waiting on work others hold — that is waiting, not finished: retry after a bit, or stop and report idle. When your `done` unlocks a parent task, the output says so; claim it, since you have the freshest context for it. When `claim` says no tasks remain, stop. Every response — including every error — ends with the exact next command, so a session that lost its context can recover from tool output alone.
+Without the environment set, the first `claim` prints your id together with the `export DIBS_AS=<id>` line to run, and every later call takes `--as <your-id>` until you do. Your hand is limited: `claim` refuses while it is full and names what you hold — finish or drop before claiming more. Blocked? `dibs drop A2 --note "why"` and claim something else. Changed something others may depend on? `dibs note "renamed util.load to util.read_cfg"` (`--for <name>` aims it at one agent; a name dibs does not know is refused, and the refusal hands you the broadcast form). If `claim` says nothing is available *yet*, the remaining tasks are waiting on work others hold — that is waiting, not finished: retry after a bit, or stop and report idle. When your `done` unlocks a parent task, the output says so; claim it, since you have the freshest context for it. When `claim` says no tasks remain, stop. Every response — including every error — ends with the exact next command, so a session that lost its context can recover from tool output alone.
 
 ## Verbs
 
@@ -127,4 +127,4 @@ A task is held by at most one agent, a hand holds at most `max-hand` tasks (defa
 
 `SSoT.md` holds the decisions and invariants and is authoritative; `ARCHITECTURE.md` is the implementation reference; `skills/dibs/SKILL.md` is the protocol workers load, and `skills/dibs-plan/SKILL.md` the one plan authors load.
 
-Status: implementation in progress — the interface above is fixed (SSoT Rev 9); `ARCHITECTURE.md` §13 tracks what has landed.
+Status: every module has landed and the interface above is fixed (SSoT Rev 11); `ARCHITECTURE.md` §13 tracks the remaining amendment steps.

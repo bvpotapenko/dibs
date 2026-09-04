@@ -201,3 +201,43 @@ def test_sqlite_error_exits_two(workspace, capsys):
     assert (code, printed) == (cli.EXIT_ENV, '')  # failures go to stderr
     assert failure.startswith('The board could not be read or written')
     assert failure.strip().endswith('Run: dibs list')
+
+
+def test_usage_error_steers_exit_one(workspace, capsys):
+    """SSoT §6/D14: `dibs done A3` with no --note, `dibs take`, and
+    `dibs claim --bogus` each exit EXIT_USER (never argparse's 2), print
+    nothing on stdout, and end stderr with the verb's canonical form -
+    'Run: dibs done <ID> --note "..."' for done, 'Run: dibs claim' for
+    the unknown verb - with no usage dump above the one-line message."""
+    raise NotImplementedError('needs cli.Parser (§13 step 13)')
+
+
+def test_join_ignores_inherited_identity(workspace, capsys, monkeypatch):
+    """D8: with DIBS_AS already set to a live identity that has unseen
+    events, `dibs join` still prints exactly one line - a fresh
+    adjective-animal-NNNN id - with no feed and no hint; the inherited
+    identity's cursor is untouched (its events arrive on its next call)."""
+    raise NotImplementedError('needs cli.run ANONYMOUS (§13 step 13)')
+
+
+def test_sync_verb_reports_the_diff(workspace, capsys):
+    """SSoT §6: after a human appends a task, `dibs sync` reports
+    '1 new (B2)' - the pipeline's auto-sync stood down for the verb - and
+    a second `dibs sync` reports 'nothing changed'; exit 0 both times."""
+    raise NotImplementedError('needs cli.open_context IMPORTERS (§13 step 13)')
+
+
+def test_note_unknown_name_refused(workspace, capsys):
+    """SSoT §6: `dibs note "hi" --for nobody` exits EXIT_USER, logs no
+    event (a following `list` shows no note line), and steers to
+    'Run: dibs note "hi"'; `--for <a known name>` and `--for <its id>`
+    both exit 0 and appear in that agent's next feed."""
+    raise NotImplementedError('needs record_note -> None (§13 step 14)')
+
+
+def test_tool_writes_never_journal_syncs(workspace, capsys):
+    """SSoT §8/D14: after one agent claims (which annotates plan.md), the
+    other agent's next command carries the claim line and no 'sync:'
+    line in its feed, and the events table holds exactly one SYNC event
+    (init's) - the annotation write journals nothing."""
+    raise NotImplementedError('needs plansync no-op sync (§13 step 14)')
