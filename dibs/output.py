@@ -51,6 +51,22 @@ VERB_FORMS = MappingProxyType({
     'drop': 'dibs drop {1}',
 })
 
+# BAD_USAGE steers with the canonical form of the verb the caller was
+# reaching for, so a malformed invocation is answered by the shape that
+# works (SSoT §6); an invocation with no verb at all falls back to the
+# catalog line, the worker loop's own next step.
+USAGE = MappingProxyType({
+    'init': 'dibs init <plan.md>',
+    'verify': 'dibs verify <plan.md>',
+    'sync': 'dibs sync',
+    'join': 'dibs join',
+    'claim': RESUME,
+    'done': 'dibs done <ID> --note "..."',
+    'drop': 'dibs drop <ID>',
+    'note': 'dibs note "..."',
+    'list': REVIEW,
+})
+
 # The next expected command after each moment, exact syntax (D14, I10)
 HINTS = MappingProxyType({
     'claim': 'dibs done {0} --note "..."',
@@ -62,7 +78,6 @@ HINTS = MappingProxyType({
     'verify': 'dibs init {0}',
     'init': 'dibs list --plan {0}',
     'list': RESUME,
-    'empty': REVIEW,
 })
 
 
@@ -77,10 +92,12 @@ class Refusal(str, Enum):
     HAND_FULL = 'hand_full'
     WAITING = 'waiting'
     EMPTY = 'empty'
+    UNKNOWN_AUDIENCE = 'unknown_audience'
     BOARD_EXISTS = 'board_exists'
     NO_BOARD = 'no_board'
     MANY_BOARDS = 'many_boards'
     UNKNOWN_ACTOR = 'unknown_actor'
+    BAD_USAGE = 'bad_usage'
     OLD_SQLITE = 'old_sqlite'
     DB_ERROR = 'db_error'
 
@@ -135,6 +152,13 @@ CATALOG = MappingProxyType({
         'No tasks remain; stop.',
         REVIEW,
     ),
+    # (name, text): note --for a name no agent here carries; the
+    # command is the same note as a broadcast, which always lands (§11)
+    Refusal.UNKNOWN_AUDIENCE: (
+        'No agent named {0} on this board - names are the ones events '
+        'show.',
+        'dibs note "{1}"',
+    ),
     # (existing key,): init on a founded board points to sync (SSoT §6)
     Refusal.BOARD_EXISTS: (
         'Board {0} already exists - sync it instead.',
@@ -159,6 +183,13 @@ CATALOG = MappingProxyType({
         'Identity {0} is unknown on this board - probably the wrong '
         'board; check $DIBS_BOARD against the plan path you were given.',
         'export DIBS_BOARD=<key or plan.md you were given>',
+    ),
+    # (message, verb): argparse's own one-liner, then the verb's
+    # canonical form from USAGE - a usage error is a refusal like any
+    # other, never a usage dump (SSoT §6, C7)
+    Refusal.BAD_USAGE: (
+        '{0}',
+        RESUME,
     ),
     # (): the board file itself failed - environment, not the caller;
     # cli exits 2 on this one and the command is worth retrying (§6)
@@ -215,7 +246,8 @@ def format_event(event: Event) -> str:
 def next_hint(moment: str, names: tuple[str, ...] = ()) -> str:
     """Look up the next-expected command for a moment, exact syntax (D14).
 
-    Moments: claim, done, unlocked, drop, note, sync, init, list, empty.
+    Moments: claim, done, unlocked, drop, note, sync, verify, init, list;
+    no 'empty' - EMPTY is a refusal, and a refusal carries its own steer.
     """
     return HINTS[moment].format(*names)
 
@@ -224,9 +256,10 @@ def steer(kind: Refusal, names: tuple[str, ...] = ()) -> DibsError:
     """Build the one DibsError: catalog (message, command) per kind (C7).
 
     Slots are positional and documented per catalog entry; every command
-    is runnable as printed (I10). Three kinds have a slot that words the
+    is runnable as printed (I10). Four kinds have a slot that words the
     steer rather than only filling it: UNKNOWN_TASK's verb picks its own
     command form (`done` carries the --note SSoT §6 makes mandatory),
+    BAD_USAGE's verb picks that verb's canonical form the same way,
     NOT_OWNER's holder is empty exactly when a reap already freed the row
     - the common case, so it reads as the status (§11) - and MANY_BOARDS
     takes one board per slot and enumerates each as its own command (D18).
@@ -234,6 +267,8 @@ def steer(kind: Refusal, names: tuple[str, ...] = ()) -> DibsError:
     message, command = CATALOG[kind]
     if kind is Refusal.UNKNOWN_TASK:
         command = VERB_FORMS.get(names[2], command)
+    if kind is Refusal.BAD_USAGE:
+        command = USAGE.get(names[1], command)
     if kind is Refusal.NOT_OWNER:
         names = (names[0], names[1] or UNOWNED)
     if kind is Refusal.MANY_BOARDS:
