@@ -299,7 +299,10 @@ def test_housekeeping_refreshes_callers_lease(board, two_agents):
 
 
 def test_record_note_broadcast_and_directed(board, two_agents):
-    """D10: no --for means to_agent NULL; --for sets it; both append."""
+    """D10: no --for means to_agent NULL; --for takes a name or that
+    agent's id and both resolve to the id. An audience no agent carries
+    inserts nothing - the INSERT's own WHERE decides (C9) - so it returns
+    None and the verb steers (SSoT §6)."""
     otter, elephant = two_agents
     shout = transitions.record_note(
         board.conn, otter.agent_id, NOW, 'moving the parser',
@@ -307,15 +310,20 @@ def test_record_note_broadcast_and_directed(board, two_agents):
     whisper = transitions.record_note(
         board.conn, otter.agent_id, NOW, 'psst', to_name=elephant.name,
     )
+    by_id = transitions.record_note(
+        board.conn, otter.agent_id, NOW, 'again', to_name=elephant.agent_id,
+    )
     stray = transitions.record_note(
         board.conn, otter.agent_id, NOW, 'hi', to_name='nobody',
     )
-    assert (shout.kind, shout.agent) == (EventKind.NOTE, otter.agent_id)
-    assert (shout.task_id, shout.to_agent) == (None, None)
+    assert (shout.kind, shout.agent, shout.task_id, shout.to_agent) == (
+        EventKind.NOTE, otter.agent_id, None, None,
+    )
     assert (whisper.to_agent, whisper.text) == (elephant.agent_id, 'psst')
-    assert stray.to_agent == 'nobody'  # verbatim; the verb warns (SSoT §6)
+    assert (by_id.to_agent, by_id.text) == (elephant.agent_id, 'again')
+    assert stray is None  # nothing logged; the verb steers (SSoT §6)
     logged = [row['id'] for row in peek_events(board, EventKind.NOTE.value)]
-    assert logged == [shout.event_id, whisper.event_id, stray.event_id]
+    assert logged == [shout.event_id, whisper.event_id, by_id.event_id]
 
 
 def test_register_agent_false_on_collision(board):

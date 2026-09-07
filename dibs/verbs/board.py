@@ -94,10 +94,20 @@ def sync_board(ctx: Context, _args: Namespace) -> Reply:
 
 
 def note_verb(ctx: Context, args: Namespace) -> Reply:
-    """Broadcast, or direct with --for, one note event (D10, SSoT §6)."""
-    transitions.record_note(
+    """Broadcast, or direct with --for, one note event (D10, SSoT §6).
+
+    An audience no agent on this board carries is refused before
+    anything is logged: record_note's zero rows is this verb's one
+    `if ... raise`, steering to the broadcast form, which always lands
+    (C6, C7).
+    """
+    event = transitions.record_note(
         ctx.conn, ctx.actor, ctx.now, args.text, args.to_name,
     )
+    if event is None:
+        raise output.steer(
+            output.Refusal.UNKNOWN_AUDIENCE, (args.to_name, args.text),
+        )
     return Reply(lines=(), events=(), hint=output.next_hint('note'))
 
 

@@ -81,12 +81,13 @@ def test_apply_sync_empty_board_is_init(tmp_path, plan_text):
         assert tuple(imported[column] for column in STATE) == (
             'done', 'human', None, NOW, None,
         )
-        events = [
-            (row['kind'], row['agent'], row['task_id'], row['ts'])
-            for row in peek_events(ctx)
-        ]
+        # The one sync that journals carries format_sync's own text (C5)
+        summary = '\n'.join(views.format_sync(plan))
+        # every event column but the autoincrement id, in DDL order
+        events = [tuple(row)[1:] for row in peek_events(ctx)]
         assert events == [
-            ('done', 'human', 'A3', NOW), ('sync', 'human', None, NOW),
+            (NOW, 'human', 'done', 'A3', None, ''),
+            (NOW, 'human', 'sync', None, None, summary),
         ]
         assert peek_meta(ctx, 'plan_mtime') == str(MTIME)
 
@@ -111,22 +112,21 @@ def test_apply_sync_imports_hand_checked_as_human(board, plan_text):
     assert [row['task_id'] for row in again] == ['A3', 'A1']  # no re-import
 
 
-def test_apply_sync_same_text_only_journals(board, plan_text):
+def test_apply_sync_same_text_journals_nothing(board, plan_text):
     """§8 idempotence: a second apply_sync on unchanged text changes no
-    row and appends exactly one SYNC event carrying format_sync's text (C3)."""
+    row and appends no event at all - nothing mutated, so the SYNC INSERT
+    finds its WHERE false (C3) - while plan_mtime is still stamped."""
     before = [tuple(row) for row in peek_tree(board)]
-    journal = len(peek_events(board))
+    journal = [tuple(row) for row in peek_events(board)]
     plan = resync(board, plan_text, LATER)
     assert (plan.new, plan.vanished, plan.checked, plan.regressed) == (
         (), (), (), (),
     )
     assert [tuple(row) for row in peek_tree(board)] == before
-    assert len(peek_events(board)) == journal + 1
-    sync = peek_events(board)[-1]
-    assert (sync['kind'], sync['agent'], sync['ts']) == (
-        'sync', 'human', LATER,
+    assert [tuple(row) for row in peek_events(board)] == journal
+    assert peek_meta(board, 'plan_mtime') == str(
+        board.plan_path.stat().st_mtime_ns,
     )
-    assert sync['text'] == '\n'.join(views.format_sync(plan))
 
 
 def test_apply_sync_refreshes_cached_text_only(board, two_agents, plan_text):
@@ -180,7 +180,8 @@ def test_apply_sync_orphans_and_reserves_ids(board, plan_text):
 def test_apply_sync_converges_under_contention(board, plan_text):
     """C11: two connections apply the same edit; BEGIN IMMEDIATE serializes
     them and the second finds nothing new - one row set, no duplicate
-    ids, two SYNC events."""
+    ids, and one SYNC event between the two: the loser mutated nothing,
+    so it journals nothing (SSoT §8)."""
     edited = f'{plan_text}- [ ] Write the changelog\n'
     board.plan_path.write_text(edited)
     plan_items = planfile.parse_plan(edited)
@@ -203,4 +204,5 @@ def test_apply_sync_converges_under_contention(board, plan_text):
     assert len(set(ids)) == len(ids) == grown
     assert 'B2' in ids
     syncs = peek_events(board, EventKind.SYNC.value)
-    assert len(syncs) == 1 + len(threads)  # the build's, then one each
+    winners = [plan for plan in outcomes if plan.new]
+    assert len(syncs) == 1 + len(winners)  # the build's, then the winner's

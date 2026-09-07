@@ -11,7 +11,7 @@ import pytest
 
 from dibs import cli
 from dibs.output import SEPARATOR
-from tests.boards import joined, key_of, run_cli
+from tests.boards import joined, key_of, peek_syncs, run_cli
 
 ERRANDS = '## Errands\n- [ ] Order the groceries\n  Budget 8000 JPY.\n'
 REFACTOR = '## Code\n- [ ] Split the parser\n  Start at parse_plan.\n'
@@ -26,6 +26,11 @@ NAME_PARTS = 3  # adjective-animal-NNNN (SSoT §7)
 def prose(lines):
     """Every line annotation may never touch: the non-checkbox ones (I4)."""
     return [line for line in lines if not line.lstrip().startswith('- [')]
+
+
+def events_of(printed, kind):
+    """The rendered event lines of one kind in a body or a feed (D10)."""
+    return [line for line in printed.split('\n') if line.startswith(kind)]
 
 
 def test_full_loop_init_join_claim_done(workspace, capsys, plan_text):
@@ -273,12 +278,37 @@ def test_sync_verb_reports_the_diff(workspace, capsys):
     )
 
 
-def test_note_unknown_name_refused(workspace, capsys):
+@pytest.mark.usefixtures('workspace')
+def test_note_unknown_name_refused(capsys):
     """SSoT §6: `dibs note "hi" --for nobody` exits EXIT_USER, logs no
     event (a following `list` shows no note line), and steers to
     'Run: dibs note "hi"'; `--for <a known name>` and `--for <its id>`
     both exit 0 and appear in that agent's next feed."""
-    raise NotImplementedError('needs record_note -> None (§13 step 14)')
+    run_cli(capsys, 'init', 'plan.md')
+    speaker, listener = joined(capsys), joined(capsys)
+    teller = speaker.rsplit('-', 1)[0]
+    audience = listener.rsplit('-', 1)[0]
+    code, printed, refusal = run_cli(
+        capsys, 'note', 'hi', '--for', 'nobody', '--as', speaker,
+    )
+    assert (code, printed) == QUIET
+    assert refusal.strip().split('\n') == [
+        'No agent named nobody on this board - names are the ones events '
+        'show.',
+        'Run: dibs note "hi"',
+    ]
+    listed = run_cli(capsys, 'list', '--as', speaker)[1]
+    assert not events_of(listed, 'note')  # refused before anything is logged
+    landed = [
+        run_cli(capsys, 'note', text, '--for', name, '--as', speaker)[0]
+        for text, name in (('by name', audience), ('by id', listener))
+    ]
+    delivered = run_cli(capsys, 'list', '--as', listener)[1]
+    assert landed == [cli.EXIT_OK, cli.EXIT_OK]
+    assert events_of(delivered.split(SEPARATOR)[1], 'note') == [
+        f'note to {audience} by {teller}: "by name"',
+        f'note to {audience} by {teller}: "by id"',
+    ]
 
 
 def test_tool_writes_never_journal_syncs(workspace, capsys):
@@ -286,4 +316,14 @@ def test_tool_writes_never_journal_syncs(workspace, capsys):
     other agent's next command carries the claim line and no 'sync:'
     line in its feed, and the events table holds exactly one SYNC event
     (init's) - the annotation write journals nothing."""
-    raise NotImplementedError('needs plansync no-op sync (§13 step 14)')
+    run_cli(capsys, 'init', 'plan.md')
+    worker, watcher = joined(capsys), joined(capsys)
+    hand = worker.rsplit('-', 1)[0]
+    assert run_cli(capsys, 'claim', '--as', worker)[0] == cli.EXIT_OK
+    listed = run_cli(capsys, 'list', '--as', watcher)[1]
+    feed = listed.split(SEPARATOR)[1]
+    assert events_of(feed, 'claim') == [
+        f'claim A1 by {hand}: Fix off-by-one in the tokenizer',
+    ]
+    assert not events_of(feed, 'sync')  # the annotation write journals nothing
+    assert peek_syncs(workspace / '.plan.md.dibs') == 1  # init's only (§8)

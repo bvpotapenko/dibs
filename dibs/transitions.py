@@ -129,15 +129,16 @@ INSERT INTO events (ts, agent, kind, task_id, to_agent, text)
 VALUES (?, ?, ?, ?, ?, ?)
 """
 
-# ?1 now  ?2 actor  ?3 to_name (NULL = broadcast)  ?4 text - a known name
-# resolves to its id; an unknown one is kept verbatim for the verb's
-# warning (SSoT §6 note row, D10)
+# ?1 now  ?2 actor  ?3 audience: NULL = broadcast, else a name or an id
+# (D10, SSoT §6)  ?4 text - the WHERE requires the audience to exist, so
+# an unknown --for inserts nothing and the verb steers (C9, C3)
 NOTE_SQL = """
 INSERT INTO events (ts, agent, kind, task_id, to_agent, text)
-VALUES (
+SELECT
     ?1, ?2, 'note', NULL,
-    COALESCE((SELECT id FROM agents WHERE name = ?3), ?3), ?4
-)
+    (SELECT id FROM agents WHERE name = ?3 OR id = ?3), ?4
+WHERE ?3 IS NULL
+   OR EXISTS (SELECT 1 FROM agents WHERE name = ?3 OR id = ?3)
 """
 
 # ?1 agent_id  ?2 name  ?3 now - the one clock stamps the join and the
@@ -274,15 +275,19 @@ def record_note(
     now: int,
     text: str,
     to_name: str | None = None,
-) -> Event:
-    """Append a broadcast or directed note event (D10).
+) -> Event | None:
+    """Append a broadcast or directed note event (D10, SSoT §6).
 
-    An unknown to_name still logs, with a warning left to the verb
-    (SSoT §6 note row).
+    The audience is a name or that agent's id, and the INSERT's own
+    WHERE requires it to exist on this board (C9). None <=> zero rows -
+    nothing was logged, and the verb raises
+    output.steer(Refusal.UNKNOWN_AUDIENCE, ...), never this function (C7).
     """
     with conn:
         conn.execute(BEGIN)
         cursor = conn.execute(NOTE_SQL, (now, actor, to_name, text))
+        if not cursor.rowcount:
+            return None
         row = conn.execute(EVENT_BY_ID_SQL, (cursor.lastrowid,)).fetchone()
     event = Event(*row)
     return replace(event, kind=EventKind(event.kind))
