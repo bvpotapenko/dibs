@@ -50,3 +50,11 @@ dibs claim                            # ... until it says no tasks remain
 Boards are per plan (`.plan.md.dibs` beside it), so unrelated swarms run side by side. Keys and agent names are grooves against drift, not security; a confused agent can cause delay, never corruption. Decisions and invariants: `SSoT.md`. Implementation reference: `ARCHITECTURE.md`. Longer walkthrough: `GUIDE.md`.
 
 Status: v1 — every module and every `docs/ARCHITECTURE.md` §13 step has landed (SSoT Rev 12); budgets, layering, and the size ceiling are held by `tests/test_architecture.py`.
+
+## License
+
+CC BY-NC 4.0 -- non-commercial use with attribution. See [LICENSE](LICENSE).
+
+Author: Potapenko Bogdan  
+*ML / AI Engineer @ Shenzhen, 2026*     
+Telegram: https://t.me/roborice
